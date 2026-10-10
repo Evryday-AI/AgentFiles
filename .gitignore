@@ -11,6 +11,11 @@ node_modules/
 dist/
 dist-client/
 coverage/
+__pycache__/
+test-results/
+playwright-report/
+artifacts/
+backups/
 storage/
 uploads/
 data/

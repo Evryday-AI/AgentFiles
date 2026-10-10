@@ -12,7 +12,11 @@ The first release will include a complete self-hosted application, Docker Compos
 
 - [Product scope](docs/superpowers/specs/2026-10-10-agentfiles-open-source-design.md)
 - [Implementation plan](docs/superpowers/plans/2026-10-10-agentfiles-open-source.md)
+- [Source-verified findings](docs/audit/2026-10-10-source-findings.md)
+- [Proposed exact source import allowlist](docs/source-import.md)
 - [Release acceptance checklist](docs/release-checklist.md)
+
+The planning audit is complete. It proposes five reviewable implementation phases; no application code has been imported, and application tests or installation acceptance have not been run. The first implementation checkpoint is sanitized source, independent baseline verification, and the initial agent Markdown skill.
 
 ## Intended workflow
 
