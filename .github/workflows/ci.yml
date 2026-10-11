@@ -1,0 +1,181 @@
+name: Standalone verification
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.21.0'
+          package-manager-cache: false
+      - name: Tracked public export
+        run: node scripts/check-public-export.mjs --tracked
+      - name: Full-history generic secret scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p .private/ci/gitleaks
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output .private/ci/gitleaks/scanner.tar.gz
+          echo '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  .private/ci/gitleaks/scanner.tar.gz' | sha256sum --check --status
+          tar -xzf .private/ci/gitleaks/scanner.tar.gz -C .private/ci/gitleaks gitleaks
+          # Use the built-in rules, no contributor allowlist or inline suppression.
+          printf '[extend]\nuseDefault = true\n' > .private/ci/gitleaks/default.toml
+          status=0
+          .private/ci/gitleaks/gitleaks git . --log-opts='--all' --redact=100 \
+            --ignore-gitleaks-allow --gitleaks-ignore-path=.private/ci/gitleaks/absent \
+            --config=.private/ci/gitleaks/default.toml \
+            --report-format=json --report-path=.private/ci/gitleaks/report.json \
+            > .private/ci/gitleaks/run.log 2>&1 || status=$?
+          if [ "$status" -ne 0 ]; then
+            echo 'Generic secret scan failed; maintainers must inspect the private redacted report.'
+            exit "$status"
+          fi
+          echo 'Full-history generic secret scan passed.'
+
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.21.0'
+          package-manager-cache: false
+      - name: Clean dependency installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p .private/ci
+          : > .private/ci/user.npmrc
+          : > .private/ci/global.npmrc
+          npm ci --no-audit --no-fund --registry=https://registry.npmjs.org \
+            --userconfig=.private/ci/user.npmrc --globalconfig=.private/ci/global.npmrc
+      - name: Typechecks, unit/setup/DOM/tools, build and OpenAPI
+        run: |
+          npm run typecheck
+          npm test
+          npm run build
+          npm run validate:openapi
+      - name: Python and shell example safety
+        env:
+          AGENTFILES_SHELL_TESTS: '1'
+        run: |
+          python3 -m unittest discover -s tests/examples -p 'test_*.py'
+          python3 -m py_compile examples/roundtrip.py
+          bash -n examples/upload.sh
+      - name: Runtime high/critical and build critical audit gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          all_status=0
+          runtime_status=0
+          npm audit --json --audit-level=critical > .private/ci/audit-all.json || all_status=$?
+          npm audit --omit=dev --json --audit-level=high > .private/ci/audit-runtime.json || runtime_status=$?
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          for (const scope of ['all', 'runtime']) {
+            const report = JSON.parse(readFileSync(`.private/ci/audit-${scope}.json`, 'utf8'));
+            if (report.error || !report.metadata?.vulnerabilities) throw new Error('Audit unavailable');
+            console.log(scope, JSON.stringify(report.metadata.vulnerabilities));
+          }
+          NODE
+          test "$all_status" -eq 0
+          test "$runtime_status" -eq 0
+      - name: Installed platform attribution report
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          cp THIRD_PARTY_NOTICES.md .private/ci/reviewed-notices.md
+          trap 'cp .private/ci/reviewed-notices.md THIRD_PARTY_NOTICES.md' EXIT
+          # Windows and Linux optional packages differ. Generate/check this Linux
+          # inventory privately; distribution still requires manual notice review.
+          node scripts/generate-notices.mjs > .private/ci/license-inventory.json
+          node scripts/generate-notices.mjs --check
+          cp THIRD_PARTY_NOTICES.md .private/ci/linux-notices.md
+      - name: Install pinned Playwright Chromium and OS dependencies
+        run: node node_modules/playwright/cli.js install --with-deps chromium
+      - name: Real PostgreSQL, browser and Compose/agent verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          cat > .private/ci/verify.mjs <<'NODE'
+          import assert from 'node:assert/strict';
+          import { randomBytes } from 'node:crypto';
+          import { spawnSync } from 'node:child_process';
+          import { mkdir, writeFile } from 'node:fs/promises';
+          import { resolve } from 'node:path';
+          import { isolatedEnvironment, ownedChild } from '../../scripts/smoke-compose.mjs';
+          import { sanitizeBrowserOutput } from '../../scripts/browser-output.mjs';
+          const env = isolatedEnvironment(process.env);
+          const suffix = randomBytes(12).toString('hex');
+          const container = `agentfiles-ci-${suffix}`;
+          const database = `agentfiles_test_${suffix}`;
+          const password = randomBytes(32).toString('hex');
+          const directory = ownedChild(resolve('.private/ci'), suffix);
+          await mkdir(directory, { mode: 0o700 });
+          const envFile = resolve(directory, 'postgres.env');
+          await writeFile(envFile, `POSTGRES_USER=agentfiles_test\nPOSTGRES_DB=${database}\nPOSTGRES_PASSWORD=${password}\n`, { mode: 0o600, flag: 'wx' });
+          const secrets = [password];
+          const docker = (args, allowFailure = false) => {
+            const result = spawnSync('docker', args, { env, windowsHide: true, encoding: 'utf8', timeout: 120000 });
+            if (!allowFailure && result.status !== 0) throw new Error('Owned PostgreSQL operation failed');
+            return result;
+          };
+          const run = async (name, args, testEnv = env, timeout = 600000) => {
+            const result = spawnSync(process.execPath, args, { env: testEnv, windowsHide: true, encoding: 'utf8', timeout, maxBuffer: 8 * 1024 * 1024 });
+            const clean = sanitizeBrowserOutput(`${result.stdout ?? ''}${result.stderr ?? ''}`, secrets);
+            await writeFile(resolve(directory, `${name}.log`), clean, { mode: 0o600 });
+            process.stdout.write(clean);
+            if (result.status !== 0) throw new Error(`${name} failed`);
+          };
+          let created = false;
+          try {
+            docker(['run', '-d', '--name', container, '--label', `agentfiles.ci-fixture=${suffix}`, '--env-file', envFile,
+              '-p', '127.0.0.1::5432', '--tmpfs', '/var/lib/postgresql/data',
+              'postgres:17.11-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826']);
+            created = true;
+            let ready = false;
+            for (let attempt = 0; attempt < 60; attempt++) {
+              if (docker(['exec', container, 'pg_isready', '-U', 'agentfiles_test', '-d', database], true).status === 0) { ready = true; break; }
+              await new Promise(done => setTimeout(done, 1000));
+            }
+            assert(ready, 'Disposable PostgreSQL readiness deadline');
+            const port = docker(['port', container, '5432/tcp']).stdout.trim().split(':').at(-1);
+            assert(/^\d+$/.test(port));
+            const url = `postgresql://agentfiles_test:${password}@127.0.0.1:${port}/${database}`;
+            secrets.push(url);
+            await writeFile(resolve(directory, 'tests.env'), `AGENTFILES_TEST_DATABASE_URL=${url}\n`, { mode: 0o600, flag: 'wx' });
+            const testEnv = { ...env, AGENTFILES_TEST_DATABASE_URL: url };
+            await run('integration', ['node_modules/vitest/vitest.mjs', 'run', '--config', 'vitest.integration.config.ts'], testEnv);
+            await run('browser', ['scripts/test-browser.mjs', 'tests/browser/handoff.spec.ts'], testEnv);
+            await run('compose-agents', ['scripts/smoke-compose.mjs', '--agents'], env, 1200000);
+          } finally {
+            if (created) {
+              assert(/^agentfiles-ci-[a-f0-9]{24}$/.test(container));
+              assert.equal(docker(['inspect', '--format', '{{index .Config.Labels "agentfiles.ci-fixture"}}', container]).stdout.trim(), suffix);
+              docker(['rm', '-f', '-v', container]);
+            }
+          }
+          NODE
+          node .private/ci/verify.mjs

@@ -21,7 +21,8 @@
     "migrate:src": "tsx src/server/migrate.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "validate:openapi": "node scripts/validate-openapi.mjs",
-    "test:browser": "node scripts/test-browser.mjs"
+    "test:browser": "node scripts/test-browser.mjs",
+    "check:public": "node scripts/check-public-export.mjs --tracked"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

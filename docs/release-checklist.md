@@ -82,3 +82,9 @@ For each checked gate, record exact public commit, executed command/scenario, en
 | Cleanup/retention/identity | C1–C3, E2 | Real ordered keep/delete arbitration and failure recovery, permanent code-only registry/post-purge old-code regression, >100 fairness, orphan clocks/active leases, actual claim/upload crash and complete-registry restore |
 | API/skill/phone | D1, D2 | Spec validation, actual curl/Python SHA round trips, rendered browser/download checks |
 | CI/security/release | E1, E3 | Confirmed private reporting, observed exact-commit CI, inspected artifacts/checksums |
+
+## E1 preparation checkpoint
+
+[Contribution/support](../CONTRIBUTING.md), [security policy](../SECURITY.md), immutable-pinned read-only CI, dependency updates and redacting source-export guards are prepared. GitHub private vulnerability reporting was enabled and confirmed on 2026-10-11. [Phase E evidence](verification/phase-e.md) distinguishes local execution from pending remote CI.
+
+Acceptance still requires both CI jobs on the exact separately authorized public commit; security/scanner failures may not be ignored because verification passes. Runtime high/critical and development/build critical dependency findings block acceptance. Lower-risk exceptions require owner, advisory/version, reason, date, expiry and reproduction evidence; there are no blanket exclusions. Installed-platform notice generation is a report/check, not a replacement for artifact-specific attribution review. Source exports exclude runtime/build data; image layers and deliberately built release artifacts need independent E3 inspection. No release checkbox is completed by this preparation checkpoint.
