@@ -18,6 +18,16 @@ function validTestEnv(): NodeJS.ProcessEnv {
 }
 
 describe("loadConfig", () => {
+  it.each(["METADATA_RETENTION_DAYS","EVENT_RETENTION_DAYS"])("rejects Date-unsafe and out-of-policy retention for %s",name=> {
+    for(const value of ["3651",String(Number.MAX_SAFE_INTEGER)]) expect(()=>loadConfig({...validTestEnv(),[name]:value})).toThrow(new RegExp(name));
+    const config=loadConfig({...validTestEnv(),[name]:"3650"});
+    const days=name==="METADATA_RETENTION_DAYS"?config.metadataRetentionDays:config.eventRetentionDays;
+    expect(Number.isFinite(new Date(Date.now()-days*86400000).getTime())).toBe(true);
+  });
+  it("validates the explicit restored-registry issuance control",()=> {
+    expect(loadConfig({...validTestEnv(),FILE_ISSUANCE_ENABLED:"false"}).issuanceEnabled).toBe(false);
+    expect(()=>loadConfig({...validTestEnv(),FILE_ISSUANCE_ENABLED:"0"})).toThrow("FILE_ISSUANCE_ENABLED");
+  });
   it("allows production optimizations with local HTTP only", () => {
     const cfg = loadConfig({ ...validTestEnv(), NODE_ENV: "production", DEPLOYMENT_MODE: "local" });
     expect(cfg).toMatchObject({ nodeEnv: "production", deploymentMode: "local", publicBaseUrl: "http://localhost:3000", trustProxy: false });

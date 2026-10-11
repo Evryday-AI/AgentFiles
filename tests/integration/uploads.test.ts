@@ -11,6 +11,7 @@ import { stageUpload, finalizeUpload, getStorageUsage } from "../../src/server/s
 import type { UploadRuntime } from "../../src/server/uploadRuntime";
 import type { Database, Queryable } from "../../src/server/db";
 import { buildServer } from "../../src/server/index";
+import { recordSafeEvent } from "../../src/server/events";
 
 const limits = { maxUploadBytes:10, maxStorageBytes:150, minFreeDiskBytes:0 };
 const runtime = (f: Awaited<ReturnType<typeof createIntegrationFixture>>) => f.server.getDecorator<UploadRuntime>("uploadRuntime");
@@ -28,6 +29,50 @@ function allocated(storageKey: string) {
   return {originalName:"synthetic.txt",storageKey,mimeType:"text/plain",sizeBytes:5,uploadedByType:"api_key" as const,expiresAt:new Date(Date.now()+86400000)};
 }
 describe("bounded upload with real PostgreSQL and disk", () => {
+  it.each(["normal", "immediate", "deferred"] as const)("confirmed %s upload records one safe creation event or visible failure", async mode => {
+    for (const eventFailure of [false, true]) {
+      let unavailable = mode === "deferred";
+      const f = await createIntegrationFixture(limits, {files:{repo:{
+        createFileRecord: async (input, db) => {
+          const record = await createFileRecord(input, db);
+          if (mode !== "normal") throw new UploadAllocationUncertainError(new Error("synthetic committed reply loss"));
+          return record;
+        },
+        reconcileUpload: async (...args) => {
+          if (unavailable) throw new Error("synthetic ownership verification outage");
+          return reconcileUpload(...args);
+        },
+      }}});
+      try {
+        if (eventFailure) await f.db.query(`CREATE FUNCTION synthetic_event_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic event failure'; END $$;
+          CREATE TRIGGER synthetic_failure BEFORE INSERT ON events FOR EACH ROW EXECUTE FUNCTION synthetic_event_failure()`);
+        const response = await send(f, syntheticMultipart("hello"));
+        expect(response.statusCode).toBe(mode === "deferred" ? 503 : 201);
+        if (mode === "deferred") {
+          expect(response.json().code).toBe("UPLOAD_OUTCOME_UNKNOWN");
+          expect(runtime(f).unresolvedCount()).toBe(1);
+          expect((await f.db.query("SELECT * FROM events")).rows).toHaveLength(0);
+          unavailable = false;
+          await runtime(f).retryUnknown();
+        }
+        await runtime(f).retryUnknown();
+        expect(runtime(f).unresolvedCount()).toBe(0);
+        expect(runtime(f).admission.snapshot()).toEqual({managedBytes:5,reservedBytes:0,active:0});
+        const record = (await f.db.query<any>("SELECT * FROM files")).rows[0];
+        expect(record.lifecycle_state).toBe("active");
+        expect(await readFile(join(f.storageRoot,record.storage_key),"utf8")).toBe("hello");
+        expect(runtime(f).activeUploads.has(record.storage_key)).toBe(false);
+        expect((await f.db.query("SELECT * FROM issued_file_codes")).rows).toHaveLength(1);
+        const state = f.server.getDecorator<any>("maintenance").state;
+        expect(state.eventFailures).toBe(eventFailure ? 1 : 0);
+        expect((await f.db.query("SELECT * FROM events WHERE file_id=$1",[record.id])).rows).toHaveLength(eventFailure ? 0 : 1);
+        if (!eventFailure) await recordSafeEvent({fileId:record.id,eventType:"file.created",actorType:"api_key"},f.db,state);
+        const events = (await f.db.query<any>("SELECT * FROM events WHERE file_id=$1",[record.id])).rows;
+        expect(events).toHaveLength(eventFailure ? 0 : 1);
+        if (!eventFailure) expect(events[0]).toMatchObject({event_type:"file.created",actor_type:"api_key",actor_name:null,details:{}});
+      } finally { await f.close(); }
+    }
+  });
   it("remeasures temporary and orphan final bytes on a fresh server before admission",async()=>{
     const f=await createIntegrationFixture({...limits,maxStorageBytes:15});let restarted:ReturnType<typeof buildServer>|undefined;
     try{
@@ -209,7 +254,7 @@ describe("bounded upload with real PostgreSQL and disk", () => {
     try{
       const result=await send(f,syntheticMultipart("hello"));
       if(point==="before-commit"){expect(result.statusCode).toBe(500);await empty(f);}
-      else{expect(result.statusCode).toBe(201);expect((await f.db.query("SELECT * FROM issued_file_codes WHERE code='F-ABCDE'")).rows).toHaveLength(1);expect(await getStorageUsage(f.storageRoot)).toEqual({bytes:5});}
+      else{expect((await f.db.query("SELECT * FROM events WHERE event_type='file.created'")).rows).toHaveLength(1);expect(result.statusCode).toBe(201);expect((await f.db.query("SELECT * FROM issued_file_codes WHERE code='F-ABCDE'")).rows).toHaveLength(1);expect(await getStorageUsage(f.storageRoot)).toEqual({bytes:5});}
     }finally{await f.close();}
   });
   it("reconciles committed response loss and retains unresolved delayed transactions until lock outcome",async()=>{
@@ -234,7 +279,7 @@ describe("bounded upload with real PostgreSQL and disk", () => {
         expect(await getStorageUsage(f.storageRoot)).toEqual({bytes:5});
         release();await background;await runtime(f).retryUnknown();
         expect(runtime(f).unresolvedCount()).toBe(0);expect(runtime(f).admission.snapshot().reservedBytes).toBe(0);
-        if(decision==="commit") {expect((await reconcileUpload(`files/${keys[0]}`,f.db))?.sizeBytes).toBe(5);expect(await readFile(join(f.storageRoot,"files",keys[0]),"utf8")).toBe("hello");}
+        if(decision==="commit") {expect((await f.db.query("SELECT * FROM events WHERE event_type='file.created'")).rows).toHaveLength(1);expect((await reconcileUpload(`files/${keys[0]}`,f.db))?.sizeBytes).toBe(5);expect(await readFile(join(f.storageRoot,"files",keys[0]),"utf8")).toBe("hello");}
         else await empty(f);
       }finally{release();await background;await f.close();}
     }

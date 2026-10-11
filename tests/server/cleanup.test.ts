@@ -8,7 +8,7 @@ describe("cleanupExpiredFiles", () => {
       findExpiredFiles: vi.fn().mockResolvedValue([
         { code: "F-ALD22", storage_key: "old.dat", is_durable: false },
       ]),
-      claimFileDeletion: vi.fn().mockResolvedValue({ code: "F-ALD22", storageKey: "old.dat", deletionClaimId: "synthetic-claim" }),
+      claimFileDeletion: vi.fn().mockResolvedValue({ id: "synthetic-id", lifecycleState: "deleting", code: "F-ALD22", storageKey: "old.dat", deletionClaimId: "synthetic-claim" }),
       finalizeFileDeletion: vi.fn().mockResolvedValue({ lifecycleState: "deleted" }),
     };
 
@@ -34,7 +34,7 @@ describe("cleanupExpiredFiles", () => {
       findExpiredFiles: vi.fn().mockResolvedValue([
         { code: "F-ALD22", storage_key: "old.dat", is_durable: false },
       ]),
-      claimFileDeletion: vi.fn().mockResolvedValue({ code: "F-ALD22", storageKey: "old.dat", deletionClaimId: "synthetic-claim" }),
+      claimFileDeletion: vi.fn().mockResolvedValue({ id: "synthetic-id", lifecycleState: "deleting", code: "F-ALD22", storageKey: "old.dat", deletionClaimId: "synthetic-claim" }),
       finalizeFileDeletion: vi.fn().mockResolvedValue({ lifecycleState: "deleted" }),
     };
 
@@ -45,7 +45,7 @@ describe("cleanupExpiredFiles", () => {
       now: new Date("2026-06-15T00:00:00Z"),
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       deleted: 0,
       failed: 1,
       failures: [{ code: "F-ALD22", storageKey: "old.dat", error: "File deletion failed; claim retained for recovery" }],

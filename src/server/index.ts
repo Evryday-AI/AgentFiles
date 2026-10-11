@@ -18,6 +18,8 @@ import { EXPECTED_SCHEMA_VERSION } from "./migrate.js";
 import { safeLoggerOptions } from "./logging.js";
 import { sendControlledError } from "./requestPolicy.js";
 import { createUploadRuntime, type UploadRuntime } from "./uploadRuntime.js";
+import { createMaintenance } from "./maintenance.js";
+import { initializeStorageAssociation } from "./storageIdentity.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const currentDir = dirname(currentFile);
@@ -29,11 +31,15 @@ export function buildServer(
     loggerStream?: import("node:stream").Writable;
     now?: () => Date;
     uploadRuntime?: UploadRuntime;
-    files?: Pick<import("./filesRoutes.js").FilesRoutesDependencies, "repo" | "storage" | "uploadIdleTimeoutMs">;
+    files?: Pick<
+      import("./filesRoutes.js").FilesRoutesDependencies,
+      "repo" | "storage" | "uploadIdleTimeoutMs"
+    >;
   } = {},
 ) {
   const db = deps.db ?? createDatabase(config.databaseUrl);
   const uploadRuntime = deps.uploadRuntime ?? createUploadRuntime(config);
+  const maintenance = createMaintenance(config, db, uploadRuntime, deps.now);
   const server = Fastify({
     logger: deps.loggerStream
       ? { ...safeLoggerOptions, stream: deps.loggerStream }
@@ -49,7 +55,16 @@ export function buildServer(
   });
   server.setErrorHandler(sendControlledError);
   server.decorate("uploadRuntime", uploadRuntime);
-  server.addHook("onReady", async () => { await uploadRuntime.rescan(); });
+  server.decorate("maintenance", maintenance);
+  server.addHook("onReady", async () => {
+    if (config.nodeEnv !== "test") {
+      if (!(await checkReadiness(db, EXPECTED_SCHEMA_VERSION)))
+        throw new Error("Database is not ready");
+      await validateStorageRoot(config.storageRoot);
+      await initializeStorageAssociation(config.storageRoot, db);
+    }
+    await uploadRuntime.rescan();
+  });
 
   server.get("/api/health", async () => ({
     ok: true,
@@ -82,36 +97,54 @@ export function buildServer(
           `${request.routeOptions.url === "/s/:token" ? "share" : "auth"}:${request.ip}`,
       }),
     );
-    await scope.register(registerAdminRoutes, { config, db, uploadRuntime });
-    await scope.register(registerFilesRoutes, { config, db, now: deps.now, ...deps.files,
-      admission: uploadRuntime.admission, activeUploads: uploadRuntime.activeUploads,
-      retainUnknown: uploadRuntime.retainUnknown });
-    await scope.register(registerShareRoutes, { config, db, now: deps.now });
+    await scope.register(registerAdminRoutes, {
+      config,
+      db,
+      uploadRuntime,
+      maintenanceState: maintenance.state,
+    });
+    await scope.register(registerFilesRoutes, {
+      config,
+      db,
+      now: deps.now,
+      ...deps.files,
+      admission: uploadRuntime.admission,
+      activeUploads: uploadRuntime.activeUploads,
+      maintenanceState: maintenance.state,
+      retainUnknown: uploadRuntime.retainUnknown,
+    });
+    await scope.register(registerShareRoutes, {
+      config,
+      db,
+      now: deps.now,
+      maintenanceState: maintenance.state,
+    });
   });
 
   const cleanupIntervalMs = config.cleanupIntervalMs;
   if (config.nodeEnv !== "test" && cleanupIntervalMs > 0) {
-    const cleanupJob = startCleanupExpiredFilesJob({
-      intervalMs: cleanupIntervalMs,
-      cleanup: async () => {
-        await uploadRuntime.retryUnknown();
-        const result = await cleanupExpiredFiles({
-          storageRoot: config.storageRoot,
-          db,
-          batchSize: config.cleanupBatchSize,
-        });
-        await uploadRuntime.rescan();
-        if (result.failed > 0)
-          server.log.error(
-            { failed: result.failed },
-            "Expired file byte cleanup failed",
-          );
-        return result;
-      },
-      onError: () => server.log.error("Expired file cleanup failed"),
+    let cleanupJob: ReturnType<typeof startCleanupExpiredFilesJob> | undefined;
+    server.addHook("onReady", async () => {
+      if (!(await checkReadiness(db, EXPECTED_SCHEMA_VERSION)))
+        throw new Error("Database is not ready for maintenance");
+      await validateStorageRoot(config.storageRoot);
+      cleanupJob = startCleanupExpiredFilesJob({
+        intervalMs: cleanupIntervalMs,
+        cleanup: async () => {
+          const result = await maintenance.run();
+          if (result.failed > 0)
+            server.log.error(
+              { failed: result.failed },
+              "Expired file byte cleanup failed",
+            );
+          return result;
+        },
+        onError: () => server.log.error("Expired file cleanup failed"),
+      });
+      await cleanupJob.run();
     });
     server.addHook("onClose", async () => {
-      await cleanupJob.stop();
+      await cleanupJob?.stop();
     });
   }
 

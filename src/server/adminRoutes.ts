@@ -21,9 +21,13 @@ import {
   type AdminPrincipal,
   type ApiKeyPrincipal,
 } from "./auth.js";
-import { getStorageUsage as defaultGetStorageUsage } from "./storage.js";
+import {
+  getStorageUsage as defaultGetStorageUsage,
+  getFreeDiskBytes,
+} from "./storage.js";
 
 interface AdminRoutesOptions {
+  maintenanceState?: import("./maintenanceState.js").MaintenanceState;
   uploadRuntime?: import("./uploadRuntime.js").UploadRuntime;
   config: AppConfig;
   db?: Queryable;
@@ -223,11 +227,27 @@ export async function registerAdminRoutes(
     }
 
     const usage = await storage.getStorageUsage(config.storageRoot);
-    return { ...usage, ...(options.uploadRuntime ? {
-      ...options.uploadRuntime.admission.snapshot(),
-      unresolvedUploads: options.uploadRuntime.unresolvedCount(),
-      maxStorageBytes: config.maxStorageBytes,
-    } : {}) };
+    const counters = options.uploadRuntime?.admission.snapshot();
+    return {
+      ...usage,
+      ...(options.uploadRuntime
+        ? {
+            ...options.uploadRuntime.admission.snapshot(),
+            unresolvedUploads: options.uploadRuntime.unresolvedCount(),
+            maxStorageBytes: config.maxStorageBytes,
+            managed_bytes: usage.bytes,
+            reserved_bytes: counters?.reservedBytes ?? 0,
+            free_disk_bytes: await getFreeDiskBytes(config.storageRoot),
+            max_storage_bytes: config.maxStorageBytes,
+            min_free_disk_bytes: config.minFreeDiskBytes,
+            active_uploads: counters?.active ?? 0,
+            cleanup: options.maintenanceState?.cleanup,
+            reconciliation: options.maintenanceState?.reconciliation,
+            purge: options.maintenanceState?.purge,
+            event_failures: options.maintenanceState?.eventFailures ?? 0,
+          }
+        : {}),
+    };
   });
 
   server.post("/api/admin/api-keys", async (request, reply) => {

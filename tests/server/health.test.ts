@@ -3,7 +3,7 @@ import { startCleanupExpiredFilesJob } from "../../src/server/cleanup";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildServer, registerShutdownSignals, shutdownServer, validateStorageRoot } from "../../src/server/index";
 import { checkReadiness, READINESS_TIMEOUT_MS } from "../../src/server/health";
-import { loadMigrations } from "../../src/server/migrate";
+import { loadMigrations, EXPECTED_SCHEMA_VERSION } from "../../src/server/migrate";
 import type { Database, Queryable } from "../../src/server/db";
 import { testConfig } from "../helpers/config";
 import { mkdtemp, rm, writeFile, symlink } from "node:fs/promises";
@@ -16,21 +16,21 @@ async function ledger() { return (await loadMigrations()).map(({ version, checks
 describe("readiness", () => {
   it("requires the complete expected version and checksums", async () => {
     const rows = await ledger();
-    expect(await checkReadiness(rowsDb(rows), 3)).toBe(true);
-    expect(await checkReadiness(rowsDb(rows.slice(0, 1)), 3)).toBe(false);
-    expect(await checkReadiness(rowsDb([...rows, { version: 4, checksum: "extra" }]), 3)).toBe(false);
-    expect(await checkReadiness(rowsDb([{ ...rows[0], checksum: "changed" }, rows[1]]), 3)).toBe(false);
-    expect(await checkReadiness(rowsDb(rows.reverse()), 3)).toBe(false);
+    expect(await checkReadiness(rowsDb(rows), EXPECTED_SCHEMA_VERSION)).toBe(true);
+    expect(await checkReadiness(rowsDb(rows.slice(0, 1)), EXPECTED_SCHEMA_VERSION)).toBe(false);
+    expect(await checkReadiness(rowsDb([...rows, { version: EXPECTED_SCHEMA_VERSION + 1, checksum: "extra" }]), EXPECTED_SCHEMA_VERSION)).toBe(false);
+    expect(await checkReadiness(rowsDb([{ ...rows[0], checksum: "changed" }, rows[1]]), EXPECTED_SCHEMA_VERSION)).toBe(false);
+    expect(await checkReadiness(rowsDb(rows.reverse()), EXPECTED_SCHEMA_VERSION)).toBe(false);
     expect(await checkReadiness(rowsDb(await ledger()), 1)).toBe(false);
   });
   it("fails closed on database errors", async () => {
-    expect(await checkReadiness({ query: async () => { throw new Error("synthetic secret"); } }, 3)).toBe(false);
+    expect(await checkReadiness({ query: async () => { throw new Error("synthetic secret"); } }, EXPECTED_SCHEMA_VERSION)).toBe(false);
   });
   it("bounds a hanging query", async () => {
     vi.useFakeTimers();
     let called!: () => void;
     const began = new Promise<void>(resolve => { called = resolve; });
-    const result = checkReadiness({ query: () => { called(); return new Promise(() => {}); } }, 3);
+    const result = checkReadiness({ query: () => { called(); return new Promise(() => {}); } }, EXPECTED_SCHEMA_VERSION);
     await began;
     await vi.advanceTimersByTimeAsync(READINESS_TIMEOUT_MS);
     expect(await result).toBe(false);
@@ -50,6 +50,23 @@ describe("readiness", () => {
   });
 });
 describe("startup storage and shutdown", () => {
+  it("does not start periodic maintenance before readiness gates succeed or after failure",async()=> {
+    vi.useFakeTimers({toFake:["setInterval","clearInterval"]});
+    let arrived!:()=>void,release!:()=>void;
+    const reached=new Promise<void>(r=>arrived=r),blocked=new Promise<void>(r=>release=r);
+    const query=vi.fn(async()=>{arrived();await blocked;return {rows:[],rowCount:0};});
+    const withClient=vi.fn(async()=>{throw new Error("maintenance should not start");});
+    const db={query,withClient,close:async()=>{}} as Database;
+    const server=buildServer(testConfig({nodeEnv:"production",cleanupIntervalMs:1000}),{db});
+    const ready=server.ready().then(()=>false,()=>true);
+    await reached;await vi.advanceTimersByTimeAsync(10000);
+    expect(withClient).not.toHaveBeenCalled();
+    expect(server.getDecorator<any>("maintenance").state.cleanup.last_attempt_at).toBe(null);
+    release();expect(await ready).toBe(true);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(query).toHaveBeenCalledTimes(1);expect(withClient).not.toHaveBeenCalled();
+    await server.close();
+  });
   it("requires an owned writable directory and sanitizes errors", async () => {
     const root = await mkdtemp(join(tmpdir(), "agentfiles-preflight-"));
     try {

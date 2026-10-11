@@ -274,9 +274,10 @@ describe("real lifecycle checkpoint protocol", () => {
             ),
           ),
       };
-      await expect(setFileDurable(file.code, true, wrapped)).rejects.toThrow(
-        "Synthetic commit failure",
-      );
+      await expect(setFileDurable(file.code, true, wrapped)).rejects.toMatchObject({
+        statusCode: 503,
+        code: "FILE_RETENTION_PENDING",
+      });
       const verified = (
         await f.db.query<{ is_durable: boolean }>(
           "SELECT is_durable FROM files",
@@ -345,7 +346,8 @@ describe("real lifecycle checkpoint protocol", () => {
       deleteStoredFile: unlink,
     });
     expect(failed.failed).toBe(1);
-    expect(commits).toBe(1);
+    // The independent ownership verification also loses its COMMIT reply.
+    expect(commits).toBe(2);
     expect(unlink).not.toHaveBeenCalled();
     expect(
       (await f.db.query("SELECT lifecycle_state FROM files")).rows,

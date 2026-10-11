@@ -9,7 +9,7 @@ import argon2 from 'argon2';
 import { createSetupFile } from './setup-lib.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const appSettings = ['NODE_ENV', 'DEPLOYMENT_MODE', 'PORT', 'DATABASE_URL', 'STORAGE_ROOT', 'SESSION_SECRET', 'ADMIN_USERNAME', 'ADMIN_PASSWORD_HASH', 'PUBLIC_BASE_URL', 'TRUST_PROXY', 'RETENTION_DAYS', 'ALLOW_PERSISTENT_FILES', 'MAX_UPLOAD_BYTES', 'MAX_STORAGE_BYTES', 'MIN_FREE_DISK_BYTES', 'MAX_CONCURRENT_UPLOADS', 'CLEANUP_INTERVAL_SECONDS', 'ORPHAN_GRACE_SECONDS', 'CLEANUP_BATCH_SIZE', 'METADATA_RETENTION_DAYS', 'EVENT_RETENTION_DAYS', 'APP_PORT', 'SETUP_UID', 'SETUP_GID'];
+const appSettings = ['NODE_ENV', 'DEPLOYMENT_MODE', 'PORT', 'DATABASE_URL', 'STORAGE_ROOT', 'SESSION_SECRET', 'ADMIN_USERNAME', 'ADMIN_PASSWORD_HASH', 'PUBLIC_BASE_URL', 'TRUST_PROXY', 'RETENTION_DAYS', 'ALLOW_PERSISTENT_FILES', 'FILE_ISSUANCE_ENABLED', 'MAX_UPLOAD_BYTES', 'MAX_STORAGE_BYTES', 'MIN_FREE_DISK_BYTES', 'MAX_CONCURRENT_UPLOADS', 'CLEANUP_INTERVAL_SECONDS', 'ORPHAN_GRACE_SECONDS', 'CLEANUP_BATCH_SIZE', 'METADATA_RETENTION_DAYS', 'EVENT_RETENTION_DAYS', 'APP_PORT', 'SETUP_UID', 'SETUP_GID'];
 
 export function ownedChild(parent, name) {
   const target = resolve(parent, name);
@@ -199,7 +199,13 @@ async function main() {
     // a temporary endpoint on the advanced project's owned default network.
     const advanced = await fixture('external', await readFile(resolve(root, 'compose.external-db.yaml'), 'utf8'), ['migrate', 'app']);
     const advancedEnv = resolve(advanced.directory, '.env');
-    await writeFile(advancedEnv, (await readFile(advancedEnv, 'utf8')).replace(/^DATABASE_URL='.*'$/m, `DATABASE_URL='${main.databaseUrl}'`), { mode: 0o600 });
+    // A new storage volume must never share the main installation's metadata
+    // or persistent volume identity. This sibling DB is on our owned server.
+    await compose(main, ['exec', '-T', 'db', 'psql', '-U', 'agentfiles', '-d', 'agentfiles', '-v', 'ON_ERROR_STOP=1', '-c', 'CREATE DATABASE agentfiles_external']);
+    const advancedUrl = new URL(main.databaseUrl);
+    advancedUrl.pathname = '/agentfiles_external';
+    secrets.push(advancedUrl.href);
+    await writeFile(advancedEnv, (await readFile(advancedEnv, 'utf8')).replace(/^DATABASE_URL='.*'$/m, `DATABASE_URL='${advancedUrl.href}'`), { mode: 0o600 });
     await compose(advanced, ['config', '--quiet']);
     await compose(advanced, ['create', 'migrate']);
     const network = `${advanced.project}_default`;

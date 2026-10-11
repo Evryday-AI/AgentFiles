@@ -21,6 +21,7 @@ import {
   type UploadedByType,
 } from "./filesRepo.js";
 import { openDownloadStream as defaultOpenDownloadStream } from "./storage.js";
+import { recordSafeEvent } from "./events.js";
 
 export interface ShareLinkRecord {
   id: string;
@@ -71,6 +72,7 @@ interface ShareStorage {
 }
 
 export interface ShareRoutesDependencies {
+  maintenanceState?: import("./maintenanceState.js").MaintenanceState;
   config: AppConfig;
   db?: Queryable;
   repo?: Partial<ShareRepo>;
@@ -182,6 +184,17 @@ export async function registerShareRoutes(
         client,
       );
 
+      await recordSafeEvent(
+        {
+          fileId: file.id,
+          eventType: "file.shared",
+          actorType: principal.type,
+          actorId: principal.type === "api_key" ? principal.id : undefined,
+          details: { share_id: share.id },
+        },
+        client,
+        dependencies.maintenanceState,
+      );
       return reply
         .code(201)
         .send(publicShareLink(share, config, token, file.code));
@@ -200,6 +213,17 @@ export async function registerShareRoutes(
         return reply.code(404).send({ error: "Share link not found" });
       }
 
+      await recordSafeEvent(
+        {
+          fileId: share.fileId,
+          eventType: "file.share_revoked",
+          actorType: principal.type,
+          actorId: principal.type === "api_key" ? principal.id : undefined,
+          details: { share_id: share.id },
+        },
+        client,
+        dependencies.maintenanceState,
+      );
       return { revoked: true, id: share.id };
     },
   );
@@ -403,6 +427,7 @@ async function claimShareDownload(
         f.created_at AS download_created_at,
         f.updated_at AS download_updated_at,
         f.expires_at AS download_expires_at,
+        f.expires_at::text AS download_expires_at_exact,
         f.is_durable AS download_is_durable,
         f.deleted_at AS download_deleted_at,
         f.deleted_reason AS download_deleted_reason,
@@ -473,6 +498,7 @@ interface ShareLinkDownloadRow extends ShareLinkRow {
   download_created_at: Date | string;
   download_updated_at: Date | string;
   download_expires_at: Date | string | null;
+  download_expires_at_exact?: string | null;
   download_is_durable: boolean;
   download_deleted_at: Date | string | null;
   download_deleted_reason: string | null;
@@ -524,6 +550,7 @@ function mapDownloadFileRow(row: ShareLinkDownloadRow): FileRecord {
     createdAt: mapDate(row.download_created_at),
     updatedAt: mapDate(row.download_updated_at),
     expiresAt: mapNullableDate(row.download_expires_at),
+    expiresAtExact: row.download_expires_at_exact,
     isDurable: row.download_is_durable,
     deletedAt: mapNullableDate(row.download_deleted_at),
     deletedReason: row.download_deleted_reason,

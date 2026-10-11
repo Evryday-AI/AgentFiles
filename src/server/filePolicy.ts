@@ -4,6 +4,7 @@ export function fileIsAvailable(
   file: {
     isDurable: boolean;
     expiresAt: Date | null;
+    expiresAtExact?: string | null;
     deletedAt: Date | null;
     lifecycleState: FileLifecycleState;
   },
@@ -12,8 +13,22 @@ export function fileIsAvailable(
   return (
     file.lifecycleState === "active" &&
     file.deletedAt === null &&
-    (file.isDurable ||
-      (file.expiresAt !== null && file.expiresAt.getTime() > now.getTime()))
+    (file.isDurable || expiryIsAfter(file, now))
+  );
+}
+
+// PostgreSQL retains microseconds; JS Date has millisecond precision. At an
+// equal millisecond, any nonzero remaining SQL fractional digit is still future.
+export function expiryIsAfter(
+  file: { expiresAt: Date | null; expiresAtExact?: string | null },
+  now: Date,
+): boolean {
+  if (!file.expiresAt) return false;
+  const delta = file.expiresAt.getTime() - now.getTime();
+  return (
+    delta > 0 ||
+    (delta === 0 &&
+      /[1-9]/.test(/\.\d{3}(\d+)/.exec(file.expiresAtExact ?? "")?.[1] ?? ""))
   );
 }
 

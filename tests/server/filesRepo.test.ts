@@ -149,7 +149,7 @@ describe("files repository lifecycle protocol", () => {
       "UPDATE",
       "COMMIT",
     ]);
-    expect(db.calls[2].params).toEqual(["F-ABCDE", true, null, at]);
+    expect(db.calls[2].params).toEqual(["F-ABCDE", true, null, at, expect.any(String)]);
   });
   it("restoring expiry starts the configured interval after acquiring lock", async () => {
     const db = new FakeDatabase([
@@ -160,7 +160,7 @@ describe("files repository lifecycle protocol", () => {
       now: () => at,
       retentionDays: 7,
     });
-    expect(db.calls[2].params).toEqual(["F-ABCDE", false, expiry, at]);
+    expect(db.calls[2].params).toEqual(["F-ABCDE", false, expiry, at, expect.any(String)]);
   });
   it.each([
     [null, 404],

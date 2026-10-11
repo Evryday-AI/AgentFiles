@@ -34,7 +34,7 @@ export async function createSetupFile({ directory, input, hashPassword, randomBy
       DATABASE_URL: `postgresql://agentfiles:${databasePassword}@db:5432/agentfiles`,
       STORAGE_ROOT: '/data/storage', SESSION_SECRET: sessionSecret,
       ADMIN_USERNAME: input.adminName, ADMIN_PASSWORD_HASH: passwordHash, PUBLIC_BASE_URL: origin,
-      TRUST_PROXY: '', RETENTION_DAYS: '7', ALLOW_PERSISTENT_FILES: 'false',
+      TRUST_PROXY: '', RETENTION_DAYS: '7', ALLOW_PERSISTENT_FILES: 'false', FILE_ISSUANCE_ENABLED: 'true',
       MAX_UPLOAD_BYTES: '1073741824', MAX_STORAGE_BYTES: '10737418240', MIN_FREE_DISK_BYTES: '1073741824',
       MAX_CONCURRENT_UPLOADS: '4', CLEANUP_INTERVAL_SECONDS: '3600', ORPHAN_GRACE_SECONDS: '86400',
       CLEANUP_BATCH_SIZE: '100', METADATA_RETENTION_DAYS: '30', EVENT_RETENTION_DAYS: '30', APP_PORT: '3000',

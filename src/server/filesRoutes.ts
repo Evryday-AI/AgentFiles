@@ -48,8 +48,14 @@ import {
   MULTIPART_IDLE_TIMEOUT_MS,
 } from "./storage.js";
 import type { Readable } from "node:stream";
-import { createUploadAdmission, type UploadAdmission } from "./uploadAdmission.js";
+import {
+  createUploadAdmission,
+  type UploadAdmission,
+} from "./uploadAdmission.js";
 import { createActiveUploads, type ActiveUploads } from "./activeUploads.js";
+import { completeDeletion } from "./deletion.js";
+import { recordSafeEvent } from "./events.js";
+import type { MaintenanceState } from "./maintenanceState.js";
 
 interface FilesRepo {
   reconcileUpload: typeof reconcileUpload;
@@ -65,7 +71,9 @@ interface FilesRepo {
 }
 
 interface FilesStorage {
-  stageUpload(input: SaveUploadInput & { maxBytes: number }): Promise<StagedUpload>;
+  stageUpload(
+    input: SaveUploadInput & { maxBytes: number },
+  ): Promise<StagedUpload>;
   finalizeUpload: typeof finalizeUpload;
   discardUpload: typeof discardUpload;
   storedFileBytes: typeof storedFileBytes;
@@ -84,6 +92,7 @@ interface ParsedUpload {
 }
 
 export interface FilesRoutesDependencies {
+  maintenanceState?: MaintenanceState;
   config: AppConfig;
   db?: Queryable;
   repo?: Partial<FilesRepo>;
@@ -146,9 +155,18 @@ export async function registerFilesRoutes(
   const repo = { ...defaultRepo, ...dependencies.repo };
   const storage = { ...defaultStorage, ...dependencies.storage };
   const now = dependencies.now ?? (() => new Date());
-  const admission = dependencies.admission ?? createUploadAdmission(config, 0, () => getFreeDiskBytes(config.storageRoot));
+  const admission =
+    dependencies.admission ??
+    createUploadAdmission(config, 0, () =>
+      getFreeDiskBytes(config.storageRoot),
+    );
   const activeUploads = dependencies.activeUploads ?? createActiveUploads();
-  if (!dependencies.admission) server.addHook("onReady", async () => { await admission.rescan(async () => (await getStorageUsage(config.storageRoot)).bytes); });
+  if (!dependencies.admission)
+    server.addHook("onReady", async () => {
+      await admission.rescan(
+        async () => (await getStorageUsage(config.storageRoot)).bytes,
+      );
+    });
   const resolvePrincipal =
     dependencies.resolvePrincipal ?? defaultResolvePrincipal;
 
@@ -207,19 +225,49 @@ export async function registerFilesRoutes(
       const principal = uploadPrincipals.get(request);
       if (!principal) return reply;
 
+      if (!config.issuanceEnabled)
+        throw new FilePolicyError(
+          503,
+          "New file issuance is disabled pending complete registry recovery",
+          "FILE_ISSUANCE_DISABLED",
+        );
       const lease = await admission.acquire();
       const releases = new Map<string, () => void>();
-      const hold = (key: string) => { if (!releases.has(key)) releases.set(key, activeUploads.hold(key)); };
+      const hold = (key: string) => {
+        if (!releases.has(key)) releases.set(key, activeUploads.hold(key));
+      };
       let saved: SavedUpload | undefined;
       let uncertain = false;
+      const confirmUpload = async (record: FileRecord) => {
+        await lease.commit(saved!.sizeBytes);
+        await recordSafeEvent(
+          {
+            fileId: record.id,
+            eventType: "file.created",
+            actorType: principal.type,
+            actorId: principal.type === "api_key" ? principal.id : undefined,
+          },
+          db,
+          dependencies.maintenanceState,
+        );
+      };
       const compensate = async () => {
         let retained = 0;
         for (const key of releases.keys()) {
-          try { await storage.discardUpload(config.storageRoot, key); }
-          catch {
-            request.log.error("Upload compensation failed; retained bytes remain charged");
-            try { retained += await storage.storedFileBytes(config.storageRoot,key); }
-            catch { retained += config.maxUploadBytes; }
+          try {
+            await storage.discardUpload(config.storageRoot, key);
+          } catch {
+            request.log.error(
+              "Upload compensation failed; retained bytes remain charged",
+            );
+            try {
+              retained += await storage.storedFileBytes(
+                config.storageRoot,
+                key,
+              );
+            } catch {
+              retained += config.maxUploadBytes;
+            }
           }
         }
         await lease.abort(retained);
@@ -231,18 +279,28 @@ export async function registerFilesRoutes(
           storage,
           config.maxUploadBytes,
           hold,
-          key => activeUploads.hold(key),
+          (key) => activeUploads.hold(key),
           () => admission.checkpoint(),
           dependencies.uploadIdleTimeoutMs,
         );
-        if (!upload) throw new FilePolicyError(400, "A file upload is required", "INVALID_INPUT");
+        if (!upload)
+          throw new FilePolicyError(
+            400,
+            "A file upload is required",
+            "INVALID_INPUT",
+          );
         strictObject(upload.fields, ["durable"]);
         const durable =
           upload.fields.durable === undefined
             ? false
             : formBoolean(upload.fields.durable);
         enforcePersistence(durable, principal, config);
-        saved = await storage.finalizeUpload(config.storageRoot, upload.staged, hold, key => activeUploads.hold(key));
+        saved = await storage.finalizeUpload(
+          config.storageRoot,
+          upload.staged,
+          hold,
+          (key) => activeUploads.hold(key),
+        );
         const record = await repo.createFileRecord(
           {
             originalName: upload.filename,
@@ -258,14 +316,14 @@ export async function registerFilesRoutes(
           },
           db,
         );
-        await lease.commit(saved.sizeBytes);
+        await confirmUpload(record);
         return reply.code(201).send(publicFile(record, config));
       } catch (error) {
         if (error instanceof UploadAllocationUncertainError && saved) {
           try {
             const record = await repo.reconcileUpload(saved.storageKey, db);
             if (record) {
-              await lease.commit(saved.sizeBytes);
+              await confirmUpload(record);
               return reply.code(201).send(publicFile(record, config));
             }
           } catch {
@@ -274,20 +332,45 @@ export async function registerFilesRoutes(
             uncertain = true;
             dependencies.retainUnknown?.(async () => {
               const record = await repo.reconcileUpload(saved!.storageKey, db);
-              if (record) await lease.commit(saved!.sizeBytes);
+              if (record) await confirmUpload(record);
               else await compensate();
               for (const release of releases.values()) release();
               return true;
             });
-            request.log.error("Upload ownership unresolved; bytes protected and reservation retained");
-            throw new FilePolicyError(503, "Upload outcome unknown; do not automatically retry", "UPLOAD_OUTCOME_UNKNOWN");
+            request.log.error(
+              "Upload ownership unresolved; bytes protected and reservation retained",
+            );
+            throw new FilePolicyError(
+              503,
+              "Upload outcome unknown; do not automatically retry",
+              "UPLOAD_OUTCOME_UNKNOWN",
+            );
           }
           error = error.originalError;
         }
         await compensate();
-        if (isErrorWithCode(error) && error.code === "ENOSPC") throw new FilePolicyError(507,"Storage capacity unavailable","STORAGE_CAPACITY_EXCEEDED");
-        if (isMultipartLimitError(error)) throw new FilePolicyError(413, "Multipart upload exceeds configured limits", "UPLOAD_TOO_LARGE");
-        if (error instanceof FilePolicyError && error.code === "UPLOAD_IDLE_TIMEOUT" && request.raw.readableEnded) throw new FilePolicyError(400,"Incomplete multipart upload","INVALID_INPUT");
+        if (isErrorWithCode(error) && error.code === "ENOSPC")
+          throw new FilePolicyError(
+            507,
+            "Storage capacity unavailable",
+            "STORAGE_CAPACITY_EXCEEDED",
+          );
+        if (isMultipartLimitError(error))
+          throw new FilePolicyError(
+            413,
+            "Multipart upload exceeds configured limits",
+            "UPLOAD_TOO_LARGE",
+          );
+        if (
+          error instanceof FilePolicyError &&
+          error.code === "UPLOAD_IDLE_TIMEOUT" &&
+          request.raw.readableEnded
+        )
+          throw new FilePolicyError(
+            400,
+            "Incomplete multipart upload",
+            "INVALID_INPUT",
+          );
         throw error;
       } finally {
         if (!uncertain) for (const release of releases.values()) release();
@@ -401,6 +484,17 @@ export async function registerFilesRoutes(
           },
         },
       );
+      await recordSafeEvent(
+        {
+          fileId: record.id,
+          eventType: "file.durable_changed",
+          actorType: principal.type,
+          actorId: principal.type === "api_key" ? principal.id : undefined,
+          details: { durable },
+        },
+        db,
+        dependencies.maintenanceState,
+      );
       return publicFile(record, config);
     },
   );
@@ -412,35 +506,60 @@ export async function registerFilesRoutes(
       if (!principal) return reply;
 
       if (request.body !== undefined) strictObject(request.body, []);
-      const record = await repo.claimFileDeletion(
-        request.params.code,
-        "manual",
-        db,
-        now,
-      );
-      if (!record) return reply.code(404).send({ error: "File not found" });
-      if (!record.deletionClaimId) throw new Error("Deletion claim missing");
       try {
-        await storage.deleteStoredFile(config.storageRoot, record.storageKey);
-        if (record.thumbnailKey)
-          await storage.deleteStoredFile(
-            config.storageRoot,
-            record.thumbnailKey,
-          );
-        const deleted = await repo.finalizeFileDeletion(
-          record.code,
-          record.deletionClaimId,
+        const record = await repo.claimFileDeletion(
+          request.params.code,
+          "manual",
           db,
+          now,
+          async (pinned) => {
+            const current = await resolvePrincipal(request, {
+              config,
+              db: pinned,
+            });
+            if (!current)
+              throw new FilePolicyError(401, "Authentication required");
+            if (!principalHasPermission(current, "can_delete"))
+              throw new FilePolicyError(
+                403,
+                "Permission denied",
+                "PERMISSION_DENIED",
+              );
+          },
         );
-        if (!deleted) throw new Error("Deletion finalization failed");
-        await admission.rescan(async () => (await getStorageUsage(config.storageRoot)).bytes);
-      } catch {
+        if (!record) return reply.code(404).send({ error: "File not found" });
+        if (!record.deletionClaimId) throw new Error("Deletion claim missing");
+        await completeDeletion({
+          file: record,
+          root: config.storageRoot,
+          db: db ?? {
+            query: async () => {
+              throw new Error("Database required");
+            },
+          },
+          maintenanceState: dependencies.maintenanceState,
+          actorType: principal.type,
+          actorId: principal.type === "api_key" ? principal.id : undefined,
+          activeUploads,
+          remove: storage.deleteStoredFile,
+          finish: repo.finalizeFileDeletion,
+          ...(dependencies.repo?.claimFileDeletion && !db
+            ? { verify: async () => record }
+            : {}),
+          recount: () =>
+            admission.rescan(
+              async () => (await getStorageUsage(config.storageRoot)).bytes,
+            ),
+        });
+        return { deleted: true, code: record.code };
+      } catch (error) {
+        if (error instanceof FilePolicyError) throw error;
         request.log.error("File deletion failed; claim retained for recovery");
-        return reply
-          .code(500)
-          .send({ error: "File deletion could not be completed" });
+        return reply.code(503).send({
+          error: "File deletion is pending recovery",
+          code: "FILE_DELETION_PENDING",
+        });
       }
-      return { deleted: true, code: record.code };
     },
   );
 }
@@ -463,19 +582,39 @@ async function readUploadRequest(
   let currentStream: Readable | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let rejectIdle!: (error: Error) => void;
-  const expired = new Promise<never>((_resolve,reject) => { rejectIdle = reject; });
-  const fail = (error: Error) => { currentStream?.destroy(error); rejectIdle(error); };
+  const expired = new Promise<never>((_resolve, reject) => {
+    rejectIdle = reject;
+  });
+  const fail = (error: Error) => {
+    currentStream?.destroy(error);
+    rejectIdle(error);
+  };
   const resetIdle = () => {
     clearTimeout(timer);
-    timer = setTimeout(() => fail(request.raw.readableEnded
-      ? new FilePolicyError(400, "Incomplete multipart upload", "INVALID_INPUT")
-      : new FilePolicyError(408, "Upload idle timeout", "UPLOAD_IDLE_TIMEOUT")), idleTimeoutMs ?? MULTIPART_IDLE_TIMEOUT_MS);
+    timer = setTimeout(
+      () =>
+        fail(
+          request.raw.readableEnded
+            ? new FilePolicyError(
+                400,
+                "Incomplete multipart upload",
+                "INVALID_INPUT",
+              )
+            : new FilePolicyError(
+                408,
+                "Upload idle timeout",
+                "UPLOAD_IDLE_TIMEOUT",
+              ),
+        ),
+      idleTimeoutMs ?? MULTIPART_IDLE_TIMEOUT_MS,
+    );
     timer.unref();
   };
-  const aborted = () => fail(new FilePolicyError(400, "Upload interrupted", "INVALID_INPUT"));
-  request.raw.on("data",resetIdle);
-  request.raw.on("aborted",aborted);
-  request.raw.on("error",aborted);
+  const aborted = () =>
+    fail(new FilePolicyError(400, "Upload interrupted", "INVALID_INPUT"));
+  request.raw.on("data", resetIdle);
+  request.raw.on("aborted", aborted);
+  request.raw.on("error", aborted);
   resetIdle();
 
   try {
@@ -483,7 +622,7 @@ async function readUploadRequest(
       limits: { ...multipartLimits, fileSize: maxUploadBytes },
     });
     while (true) {
-      const next = await Promise.race([parts.next(),expired]);
+      const next = await Promise.race([parts.next(), expired]);
       if (next.done) break;
       const part = next.value;
       partCount += 1;
@@ -550,9 +689,9 @@ async function readUploadRequest(
     throw error;
   } finally {
     clearTimeout(timer);
-    request.raw.off("data",resetIdle);
-    request.raw.off("aborted",aborted);
-    request.raw.off("error",aborted);
+    request.raw.off("data", resetIdle);
+    request.raw.off("aborted", aborted);
+    request.raw.off("error", aborted);
   }
 
   return upload;

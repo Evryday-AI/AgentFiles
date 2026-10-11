@@ -698,7 +698,7 @@ describe("file routes", () => {
     expect(finalizeFileDeletion).toHaveBeenCalledWith(
       "F-ABCDE",
       "synthetic-claim",
-      undefined,
+      expect.objectContaining({ query: expect.any(Function) }),
     );
     expect(deleteStoredFile.mock.invocationCallOrder[0]).toBeLessThan(
       finalizeFileDeletion.mock.invocationCallOrder[0] ??
@@ -732,7 +732,7 @@ describe("file routes", () => {
       url: "/api/files/F-ABCDE",
     });
 
-    expect(response.statusCode).toBe(500);
+    expect(response.statusCode).toBe(503);
     expect(deleteStoredFile).toHaveBeenCalledWith(
       baseConfig.storageRoot,
       "F-ABCDE/F-ABCDE.txt",
@@ -740,7 +740,7 @@ describe("file routes", () => {
     expect(finalizeFileDeletion).toHaveBeenCalledWith(
       "F-ABCDE",
       "synthetic-claim",
-      undefined,
+      expect.objectContaining({ query: expect.any(Function) }),
     );
 
     await server.close();
@@ -771,14 +771,14 @@ describe("file routes", () => {
       url: "/api/files/F-ABCDE",
     });
 
-    expect(response.statusCode).toBe(500);
+    expect(response.statusCode).toBe(503);
     expect(deleteStoredFile).toHaveBeenCalledWith(
       baseConfig.storageRoot,
       "F-ABCDE/F-ABCDE.txt",
     );
     expect(finalizeFileDeletion).not.toHaveBeenCalled();
     expect(response.json()).toMatchObject({
-      error: "File deletion could not be completed",
+      error: "File deletion is pending recovery", code: "FILE_DELETION_PENDING",
     });
 
     await server.close();

@@ -105,14 +105,15 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env) {
     trustProxy: proxyAddresses(source, deploymentMode),
     retentionDays: integer(source, "RETENTION_DAYS", 7, 1, 3650),
     allowPersistentFiles: persistence === "true",
+    issuanceEnabled: enumValue(source, "FILE_ISSUANCE_ENABLED", ["true", "false"] as const, "true") === "true",
     maxUploadBytes, maxStorageBytes,
     minFreeDiskBytes: integer(source, "MIN_FREE_DISK_BYTES", 1073741824, 0),
     maxConcurrentUploads: integer(source, "MAX_CONCURRENT_UPLOADS", 4, 1, 64),
     cleanupIntervalMs: cleanupSeconds * 1000,
     orphanGraceMs: orphanSeconds * 1000,
     cleanupBatchSize: integer(source, "CLEANUP_BATCH_SIZE", 100, 1, 500),
-    metadataRetentionDays: integer(source, "METADATA_RETENTION_DAYS", 30, 1),
-    eventRetentionDays: integer(source, "EVENT_RETENTION_DAYS", 30, 1),
+    metadataRetentionDays: integer(source, "METADATA_RETENTION_DAYS", 30, 1, 3650),
+    eventRetentionDays: integer(source, "EVENT_RETENTION_DAYS", 30, 1, 3650),
   };
 }
 

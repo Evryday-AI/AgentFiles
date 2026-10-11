@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { createDatabase } from "../../src/server/db";
 import { buildServer } from "../../src/server/index";
 import { migrate } from "../../src/server/migrate";
+import { initializeStorageAssociation } from "../../src/server/storageIdentity";
 import { testConfig } from "./config";
 import type { AppConfig } from "../../src/server/config";
 import {
@@ -123,6 +124,7 @@ export async function createIntegrationFixture(
   });
   try {
     await migrate(db);
+    await initializeStorageAssociation(storageRoot,db);
     server = buildServer(config, { db, ...dependencies });
     await server.ready();
   } catch {

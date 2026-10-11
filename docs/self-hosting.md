@@ -1,6 +1,6 @@
 # Self-hosting preparation
 
-AgentFiles remains in preparation. Phase B has a verified fresh local installation on Docker Desktop with Linux amd64 containers. Lifecycle hardening, agent/browser checks, upgrade/restore and final release acceptance remain pending in the [release checklist](release-checklist.md). These instructions describe the tested installation workflow, not a production-ready release.
+AgentFiles remains in preparation. Phase B has a verified fresh local installation on Docker Desktop with Linux amd64 containers. Lifecycle hardening has [Phase C evidence](verification/phase-c.md) awaiting final review; agent/browser checks, upgrade/restore and final release acceptance remain pending in the [release checklist](release-checklist.md). These instructions describe the tested installation workflow, not a production-ready release.
 
 ## Prerequisites and isolation
 
@@ -79,7 +79,7 @@ Recreate only the app against the existing database and storage:
 docker compose up -d --no-deps --force-recreate app
 ```
 
-Keep the same Compose project name and checkout directory: changing them creates different default volume names. Normal operation and updates must not use `down --volumes` or `down -v`. Stop grace is 15 seconds, exceeding the application's ten-second shutdown deadline. Hard kills can interrupt transfers; crash recovery and lifecycle guarantees remain Phase C work.
+Keep the same Compose project name and checkout directory: changing them creates different default volume names. Normal operation and updates must not use `down --volumes` or `down -v`. Stop grace is 15 seconds, exceeding the application's ten-second shutdown deadline. Hard kills can interrupt transfers. Phase C verifies deterministic recovery windows; actual process-kill and power-loss recovery acceptance remains E2.
 
 ## Isolated installation smoke
 
@@ -92,7 +92,7 @@ node scripts/smoke-compose.mjs
 
 The runner generates synthetic credentials/configuration in an ignored dedicated scratch directory. It uses unique Compose projects and disposable volumes, strips ambient application/PG/Compose/Docker settings, and never reads the checkout's `.env` or ambient `DATABASE_URL`. It checks first-start gates, authenticated upload/download checksums, DB outage, recreation, Linux signals, POSIX permissions and real migration failure. It also starts the advanced Compose file against its own synthetic database fixture.
 
-The runner removes only its uniquely owned disposable services/networks/volumes and retains bounded sanitized evidence in ignored scratch. Generated image tags and build cache remain local build artifacts. It never prunes other installations. Smoke success is installation evidence; pending lifecycle/release gates still apply.
+The runner removes only its uniquely owned disposable services/networks/volumes and retains bounded sanitized evidence in ignored scratch. Generated image tags and build cache remain local build artifacts. It never prunes other installations. Smoke success is installation evidence; final review and release gates still apply.
 
 ## Advanced independent database
 
@@ -115,4 +115,6 @@ Set `TRUST_PROXY` to only exact proxy source IP addresses or CIDRs observed by t
 
 Allow `MAX_UPLOAD_BYTES` plus multipart headers/fields in the proxy body limit; reserve at least 1 MiB overhead for the current bounded fields/headers. Set upload/read/write/idle timeouts for the largest expected transfers and connection speed. Review buffering and temporary-disk behavior against your storage policy. Preserve application error status codes.
 
-Proxy access/error logs must omit Authorization, cookies and request bodies and scrub bearer tokens in `/s/<token>` paths, including query strings/referrers that could carry links. Restrict log access and retention. App log/lifecycle hardening is pending Phase C; proxy policy alone does not satisfy that gate. Reachable public HTTPS and actual phone access need separate D2/E2 evidence and were not tested in Phase B.
+Proxy access/error logs must omit Authorization, cookies and request bodies and scrub bearer tokens in `/s/<token>` paths, including query strings/referrers that could carry links. Restrict log access and retention. App logs use safe route templates and redact secret fields. Configure bounded proxy/container log rotation (recommended maximum 30 days); lifecycle events have separate app-managed retention. See [retention](retention.md). Reachable public HTTPS and actual phone access need separate D2/E2 evidence and were not tested in Phase B.
+
+Storage startup pairs the database and volume through a persistent UUID marker. Preserve `.agentfiles-volume` with all file bytes and the matching database `storage_volume_identity` row. Do not point an existing database at an empty replacement mount: startup refuses this uncertainty. Before any stale-snapshot restore, set `FILE_ISSUANCE_ENABLED=false` and recover the complete issued-code registry, including codes issued after the snapshot. Detailed [recovery boundaries](retention.md) apply; the release backup/restore workflow remains E2.

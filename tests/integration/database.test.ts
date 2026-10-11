@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createDatabase } from "../../src/server/db";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  EXPECTED_SCHEMA_VERSION,
   loadMigrations,
   migrate,
   MIGRATION_LOCK_ID,
@@ -35,7 +36,7 @@ describe("real independent PostgreSQL migrations", () => {
     const first = (
       await db.query("SELECT * FROM schema_migrations ORDER BY version")
     ).rows;
-    expect(first).toHaveLength(3);
+    expect(first).toHaveLength(EXPECTED_SCHEMA_VERSION);
     await migrate(db);
     expect(
       (await db.query("SELECT * FROM schema_migrations ORDER BY version")).rows,
@@ -166,7 +167,7 @@ describe("real independent PostgreSQL migrations", () => {
       ).rows[0],
     ).toEqual({ ledger: null, files: null });
     await migrate(db);
-    expect(await checkReadiness(db, 3)).toBe(true);
+    expect(await checkReadiness(db, EXPECTED_SCHEMA_VERSION)).toBe(true);
   });
 
   it("rolls back pending SQL while preserving an already applied ledger", async () => {
@@ -256,8 +257,8 @@ describe("real independent PostgreSQL migrations", () => {
     await Promise.all(tasks);
     expect(
       (await db.query("SELECT * FROM schema_migrations ORDER BY version")).rows,
-    ).toHaveLength(3);
-    expect(await checkReadiness(db, 3)).toBe(true);
+    ).toHaveLength(EXPECTED_SCHEMA_VERSION);
+    expect(await checkReadiness(db, EXPECTED_SCHEMA_VERSION)).toBe(true);
   });
 
   it("refuses changed checksums without changing the ledger", async () => {
@@ -275,21 +276,21 @@ describe("real independent PostgreSQL migrations", () => {
     expect(
       (await db.query("SELECT * FROM schema_migrations ORDER BY version")).rows,
     ).toEqual(before);
-    expect(await checkReadiness(db, 3)).toBe(false);
+    expect(await checkReadiness(db, EXPECTED_SCHEMA_VERSION)).toBe(false);
   });
 
   it("reports false before migrations, with a version gap/future version, and after DB close", async () => {
     const { db } = await owned();
-    expect(await checkReadiness(db, 3)).toBe(false);
+    expect(await checkReadiness(db, EXPECTED_SCHEMA_VERSION)).toBe(false);
     await migrate(db);
-    expect(await checkReadiness(db, 3)).toBe(true);
-    await db.query("UPDATE schema_migrations SET version=4 WHERE version=3");
-    expect(await checkReadiness(db, 3)).toBe(false);
+    expect(await checkReadiness(db, EXPECTED_SCHEMA_VERSION)).toBe(true);
+    await db.query("UPDATE schema_migrations SET version=5 WHERE version=4");
+    expect(await checkReadiness(db, EXPECTED_SCHEMA_VERSION)).toBe(false);
     await expect(migrate(db)).rejects.toThrow(
       "Migration ledger does not match",
     );
     await db.close();
-    expect(await checkReadiness(db, 3)).toBe(false);
+    expect(await checkReadiness(db, EXPECTED_SCHEMA_VERSION)).toBe(false);
   });
 
   it("fails readiness when the owned PostgreSQL database refuses new connections", async () => {
@@ -299,7 +300,7 @@ describe("real independent PostgreSQL migrations", () => {
     await fixture.disableConnections();
     const disconnected = createDatabase(fixture.databaseUrl);
     try {
-      expect(await checkReadiness(disconnected, 3)).toBe(false);
+      expect(await checkReadiness(disconnected, EXPECTED_SCHEMA_VERSION)).toBe(false);
     } finally {
       await disconnected.close();
     }
@@ -347,7 +348,7 @@ describe("real independent PostgreSQL migrations", () => {
       );
     const success = run();
     expect(success.status).toBe(0);
-    expect(await checkReadiness(fixture.db, 3)).toBe(true);
+    expect(await checkReadiness(fixture.db, EXPECTED_SCHEMA_VERSION)).toBe(true);
     await fixture.db.query(
       "UPDATE schema_migrations SET checksum='synthetic-invalid-checksum' WHERE version=1",
     );
