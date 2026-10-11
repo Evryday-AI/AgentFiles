@@ -6,7 +6,7 @@ Upload through an HTTP API, pass a short file code to another authorized agent, 
 
 ## Project status
 
-AgentFiles is in preparation. The complete standalone MIT application, administrator setup, Compose runtime, lifecycle controls, HTTP agent examples and browser interface have local verification evidence. A fresh local installation has been exercised on Windows with Docker Desktop Linux containers. CI/security maintenance is being prepared; operations, exact public-commit CI and release acceptance remain pending. An installable release has not been published.
+AgentFiles is in preparation. The complete standalone MIT application, administrator setup, Compose runtime, lifecycle controls, HTTP agent examples and browser interface have local verification evidence. A fresh local installation has been exercised on Windows with Docker Desktop Linux containers. CI/security maintenance and synthetic upgrade/backup/restore checks are implemented locally. An independent local release-candidate audit is being prepared; exact public-commit CI, reachable HTTPS/physical-phone evidence and release acceptance remain pending. An installable release has not been published.
 
 The first release will include a complete self-hosted application, Docker Compose installation, a mobile-friendly browser interface, API documentation, and an agent skill. No paid account or hosted-service dependency will be required to run it.
 
@@ -19,7 +19,7 @@ The first release will include a complete self-hosted application, Docker Compos
 - [Lifecycle verification](docs/verification/phase-c.md), [agent/browser verification](docs/verification/phase-d.md) and [CI/security preparation](docs/verification/phase-e.md)
 - [Agent skill](skills/agentfiles/SKILL.md) and [HTTP examples](docs/agents.md)
 - [Dependency review](docs/dependencies.md) and [third-party notices](THIRD_PARTY_NOTICES.md)
-- [Release acceptance checklist](docs/release-checklist.md)
+- [Release acceptance checklist](docs/release-checklist.md), [v0.1.0 candidate notes](docs/releases/v0.1.0.md) and [candidate evidence](docs/verification/v0.1.0.md)
 - [Contributing and support](CONTRIBUTING.md) and [private security reporting](SECURITY.md)
 
 Phase A imported 42 individually reviewed files and verified the isolated baseline. Phase B exercised setup, versioned migrations, readiness, owned storage and authenticated upload/download through fresh Compose resources. Phases C–D verified authorization/lifecycle arbitration on real PostgreSQL, independent curl/Python checksum roundtrips, and Chromium browser handoff at three viewport sizes. The verification reports distinguish unit tests, real installation checks, viewport evidence and untested deployment behavior.
@@ -41,7 +41,7 @@ On Linux, export the invoking user's `SETUP_UID`/`SETUP_GID` as the setup guide 
 
 ## Retention and tested environments
 
-Temporary files expire after seven days by default. Persistent files require explicit administrator policy (`ALLOW_PERSISTENT_FILES=false` by default), permission and an intentional keep operation; temporary files never become permanent automatically. Deleted details/events default to 30-day retention. Issued codes remain reserved permanently and are never reused. Logs, external backups and recipients' copies have independent operator/recipient retention; snapshots may retain expired content. Read [retention/recovery](docs/retention.md) before changing policy or restoring data. Upgrade/backup/restore acceptance remains pending Phase E operations.
+Temporary files expire after seven days by default. Persistent files require explicit administrator policy (`ALLOW_PERSISTENT_FILES=false` by default), permission and an intentional keep operation; temporary files never become permanent automatically. Deleted details/events default to 30-day retention. Issued codes remain reserved permanently and are never reused. Logs, external backups and recipients' copies have independent operator/recipient retention; snapshots may retain expired content. Read [retention/recovery](docs/retention.md) before changing policy or restoring data. Synthetic upgrade/backup/restore checks are recorded in [Phase E](docs/verification/phase-e.md); final release acceptance remains pending.
 
 | Environment | Observed evidence | Limits |
 | --- | --- | --- |
