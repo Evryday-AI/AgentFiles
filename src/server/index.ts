@@ -17,6 +17,7 @@ const currentDir = dirname(currentFile);
 export function buildServer(config: AppConfig = loadConfig()) {
   const server = Fastify({
     logger: config.nodeEnv !== "test",
+    trustProxy: config.trustProxy,
   });
 
   server.get("/api/health", async () => ({
@@ -34,8 +35,7 @@ export function buildServer(config: AppConfig = loadConfig()) {
   void server.register(registerFilesRoutes, { config });
   void server.register(registerShareRoutes, { config });
 
-  const cleanupIntervalMs =
-    (config as AppConfig & { cleanupIntervalMs?: number }).cleanupIntervalMs ?? 60 * 60 * 1000;
+  const cleanupIntervalMs = config.cleanupIntervalMs;
   if (config.nodeEnv !== "test" && cleanupIntervalMs > 0) {
     const cleanupJob = startCleanupExpiredFilesJob({
       intervalMs: cleanupIntervalMs,
@@ -91,7 +91,9 @@ export function buildServer(config: AppConfig = loadConfig()) {
 async function start() {
   const config = loadConfig();
   const server = buildServer(config);
-  await server.listen({ host: "0.0.0.0", port: config.port });
+  // Containers opt in explicitly; native startup stays bound to loopback.
+  const host = process.argv.includes("--host=0.0.0.0") ? "0.0.0.0" : "127.0.0.1";
+  await server.listen({ host, port: config.port });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

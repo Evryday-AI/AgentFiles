@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { AppConfig } from "./config.js";
+import { cookieIsSecure, type AppConfig } from "./config.js";
 import { query as defaultQuery, type Queryable } from "./db.js";
 import {
   ADMIN_SESSION_COOKIE_NAME,
@@ -125,7 +125,7 @@ export async function registerAdminRoutes(
         path: "/",
         httpOnly: true,
         sameSite: "lax",
-        secure: config.nodeEnv === "production",
+        secure: cookieIsSecure(config),
         signed: true,
         maxAge: Math.floor(sessionTtlMs / 1000),
       });
@@ -427,7 +427,7 @@ function clearSessionCookie(reply: FastifyReply, config: AppConfig) {
     path: "/",
     httpOnly: true,
     sameSite: "lax",
-    secure: config.nodeEnv === "production",
+    secure: cookieIsSecure(config),
     signed: true,
   });
 }

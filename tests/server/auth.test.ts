@@ -1,5 +1,3 @@
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   ADMIN_SESSION_COOKIE_NAME,
@@ -13,7 +11,7 @@ import {
   hasPermission,
   type Permission,
 } from "../../src/server/auth";
-import type { AppConfig } from "../../src/server/config";
+import { testConfig } from "../helpers/config";
 import type { Queryable } from "../../src/server/db";
 
 class FakeQueryable implements Queryable {
@@ -28,17 +26,7 @@ class FakeQueryable implements Queryable {
   }
 }
 
-const baseConfig: AppConfig = {
-  nodeEnv: "test",
-  port: 3000,
-  databaseUrl: "postgres://user:pass@localhost:5432/agentfiles_test",
-  storageRoot: join(tmpdir(), "agentfiles-test"),
-  sessionSecret: "session-secret-with-at-least-32-characters",
-  adminUsername: "admin",
-  adminPasswordHash: "$argon2id$v=19$m=65536,t=3,p=4$abc$def",
-  retentionDays: 7,
-  publicBaseUrl: "http://localhost:3000",
-};
+const baseConfig = testConfig();
 
 describe("API key auth", () => {
   it("hashes and verifies API key secrets", async () => {

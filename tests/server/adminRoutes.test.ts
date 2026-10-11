@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { hashApiKey } from "../../src/server/auth";
 import { registerAdminRoutes } from "../../src/server/adminRoutes";
-import type { AppConfig } from "../../src/server/config";
+import { testConfig } from "../helpers/config";
 import type { Queryable } from "../../src/server/db";
 import { buildServer } from "../../src/server/index";
 
@@ -23,21 +23,11 @@ class FakeQueryable implements Queryable {
   }
 }
 
-const baseConfig: AppConfig = {
-  nodeEnv: "test",
-  port: 3000,
-  databaseUrl: "postgres://user:pass@localhost:5432/agentfiles_test",
-  storageRoot: join(tmpdir(), "agentfiles-test"),
-  sessionSecret: "session-secret-with-at-least-32-characters",
-  adminUsername: "admin",
-  adminPasswordHash: "$argon2id$v=19$m=65536,t=3,p=4$abc$def",
-  retentionDays: 7,
-  publicBaseUrl: "http://localhost:3000",
-};
+const baseConfig = testConfig();
 
 const tempRoots: string[] = [];
 
-async function buildTestServer(db: Queryable, config: AppConfig) {
+async function buildTestServer(db: Queryable, config: ReturnType<typeof testConfig>) {
   const server = Fastify({ logger: false });
   await server.register(fastifyCookie, {
     secret: config.sessionSecret,
@@ -52,6 +42,31 @@ async function buildTestServer(db: Queryable, config: AppConfig) {
 describe("admin auth routes", () => {
   afterEach(async () => {
     await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  it.each([
+    ["production", "local", false], ["development", "public", true],
+  ] as const)("uses %s/%s transport cookie policy", async (nodeEnv, deploymentMode, secure) => {
+    const config = { ...baseConfig, nodeEnv, deploymentMode, adminPasswordHash: await hashApiKey("synthetic-cookie-password") };
+    const server = await buildTestServer(new FakeQueryable([[{ id: "synthetic-session" }]]), config);
+    const login = await server.inject({ method: "POST", url: "/api/auth/login", payload: { username: "admin", password: "synthetic-cookie-password" } });
+    expect(login.statusCode).toBe(200);
+    expect(login.cookies[0]).toMatchObject({ httpOnly: true, sameSite: "Lax" });
+    expect(login.cookies[0]?.secure ?? false).toBe(secure);
+    expect(server.unsignCookie(login.cookies[0]!.value).valid).toBe(true);
+    const logout = await server.inject({ method: "POST", url: "/api/auth/logout" });
+    expect(logout.cookies[0]?.secure ?? false).toBe(secure);
+    await server.close();
+  });
+
+  it.each([
+    [false, "127.0.0.1"], [["127.0.0.1"], "192.0.2.10"], [["192.0.2.0/24"], "127.0.0.1"],
+  ] as Array<[false | string[], string]>)("applies only the configured trusted proxy addresses: %s", async (trustProxy, expectedIp) => {
+    const server = buildServer({ ...baseConfig, trustProxy });
+    server.get("/api/test-proxy", async (request) => ({ ip: request.ip }));
+    const response = await server.inject({ url: "/api/test-proxy", remoteAddress: "127.0.0.1", headers: { "x-forwarded-for": "192.0.2.10" } });
+    expect(response.json()).toEqual({ ip: expectedIp });
+    await server.close();
   });
 
   it("registers signed cookie support at the root server for sibling routes", async () => {

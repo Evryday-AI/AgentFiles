@@ -1,10 +1,8 @@
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { Readable } from "node:stream";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import type { Principal } from "../../src/server/auth";
-import type { AppConfig } from "../../src/server/config";
+import { testConfig } from "../helpers/config";
 import { registerFilesRoutes, type FilesRoutesDependencies } from "../../src/server/filesRoutes";
 import type { FileRecord } from "../../src/server/filesRepo";
 import { buildServer } from "../../src/server/index";
@@ -12,17 +10,7 @@ import { buildServer } from "../../src/server/index";
 const now = new Date("2026-06-07T18:00:00.000Z");
 const expiresAt = new Date("2026-06-14T18:00:00.000Z");
 
-const baseConfig: AppConfig = {
-  nodeEnv: "test",
-  port: 3000,
-  databaseUrl: "postgres://user:pass@localhost:5432/agentfiles_test",
-  storageRoot: join(tmpdir(), "agentfiles-test"),
-  sessionSecret: "session-secret-with-at-least-32-characters",
-  adminUsername: "admin",
-  adminPasswordHash: "$argon2id$v=19$m=65536,t=3,p=4$abc$def",
-  retentionDays: 7,
-  publicBaseUrl: "http://localhost:3000",
-};
+const baseConfig = testConfig();
 
 const apiKeyPrincipal: Principal = {
   type: "api_key",
