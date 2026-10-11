@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hash, argon2id } from "argon2";
+import { hash, verify, argon2id } from "argon2";
 import { beforeAll, describe, expect, it } from "vitest";
 import { cookieIsSecure, loadConfig } from "../../src/server/config";
 
@@ -72,6 +72,28 @@ describe("loadConfig", () => {
   });
   it.each(["GENERATE_WITH_SETUP", "invalid", "$argon2id$v=19$m=65536,t=3,p=4$abc$def", "$argon2i$v=19$m=65536,t=3,p=4$abc$def"])("rejects invalid hashes", (hashValue) => {
     expect(() => loadConfig({ ...validTestEnv(), ADMIN_PASSWORD_HASH: hashValue })).toThrow(/ADMIN_PASSWORD_HASH/);
+  });
+  it.each([
+    ["memory", "m=4294967296,t=3,p=1"],
+    ["time", "m=65536,t=4294967296,p=1"],
+    ["parallelism", "m=134217728,t=3,p=16777216"],
+  ])("rejects unsupported Argon2 %s before authentication can fail", async (_name, parameters) => {
+    const invalidHash = passwordHash.replace(/m=\d+,t=\d+,p=\d+/, parameters);
+    // Real native verification rejects these without allocating the requested memory.
+    await expect(verify(invalidHash, "synthetic-config-password")).rejects.toThrow();
+    expect(() => loadConfig({ ...validTestEnv(), ADMIN_PASSWORD_HASH: invalidHash })).toThrow("ADMIN_PASSWORD_HASH is invalid");
+  });
+  it.each([
+    "m=4294967295,t=1,p=1", "m=8,t=4294967295,p=1", "m=134217720,t=1,p=16777215",
+  ])("accepts supported Argon2 encoding bounds: %s", (parameters) => {
+    const boundaryHash = passwordHash.replace(/m=\d+,t=\d+,p=\d+/, parameters);
+    // Validate encoding only: executing these costs would consume excessive resources.
+    expect(loadConfig({ ...validTestEnv(), ADMIN_PASSWORD_HASH: boundaryHash }).adminPasswordHash).toBe(boundaryHash);
+  });
+  it("accepts and verifies a real hash at supported minimum cost bounds", async () => {
+    const minimumHash = await hash("synthetic-minimum-cost-password", { type: argon2id, memoryCost: 8, timeCost: 1, parallelism: 1 });
+    const config = loadConfig({ ...validTestEnv(), ADMIN_PASSWORD_HASH: minimumHash });
+    await expect(verify(config.adminPasswordHash, "synthetic-minimum-cost-password")).resolves.toBe(true);
   });
   it.each(["NODE_ENV", "DEPLOYMENT_MODE"])("rejects unknown enum values for %s", (name) => {
     expect(() => loadConfig({ ...validTestEnv(), [name]: "unknown" })).toThrow(new RegExp(name));

@@ -47,7 +47,10 @@ function adminPasswordHash(source: NodeJS.ProcessEnv): string {
   const match = /^\$argon2id\$v=19\$m=(\d+),t=(\d+),p=(\d+)\$([A-Za-z0-9+/]+)\$([A-Za-z0-9+/]+)$/.exec(value);
   if (!match) invalid("ADMIN_PASSWORD_HASH");
   const [memory, iterations, parallelism] = match.slice(1, 4).map(Number);
-  if (![memory, iterations, parallelism].every((n) => Number.isSafeInteger(n) && n > 0) || memory < 8 * parallelism ||
+  // Argon2 uses uint32 memory/time costs and a 24-bit maximum lane count.
+  // Larger safe JS integers can wrap at the native boundary and make login unusable.
+  if (![memory, iterations, parallelism].every((n) => Number.isSafeInteger(n) && n > 0) ||
+      memory > 2 ** 32 - 1 || iterations > 2 ** 32 - 1 || parallelism > 2 ** 24 - 1 || memory < 8 * parallelism ||
       !safeBase64(match[4], "base64", 8) || !safeBase64(match[5], "base64", 16)) invalid("ADMIN_PASSWORD_HASH");
   return value;
 }
