@@ -1,6 +1,6 @@
 # AgentFiles MIT self-hosted implementation plan
 
-> **For agentic workers:** Use `executing-plans` after the owner reviews this written plan. Track checkbox steps. This session produces documentation only; application import, implementation, runtime migration, and deployment are not authorized by this plan alone.
+> **For agentic workers:** Phase A (A1–A3) is implemented locally; use `executing-plans` and track checkbox steps. The owner authorizes MIT licensing and import of their original code within that reviewed scope; pushing or publishing source requires a separate instruction. Continue individual content/provenance and third-party notice checks. Phases B–E are written for later review and execution; do not implement B/C as part of Phase A. Production runtime migration and deployment are outside this authorization.
 
 **Goal:** Release a complete independent MIT file handoff app that a stranger can install, connect to a generic HTTP-capable agent, and use on a phone.
 
@@ -16,6 +16,7 @@
 - Single administrator with multiple named, permission-scoped API keys is sufficient for the first release. Shared customer tenancy and team memberships are deferred.
 - Default retention remains seven days for compatibility. Persistent files are an explicit administrator-controlled option, explained in the UI and docs.
 - Short file codes require authenticated access. Sharing outside the installation's authorized users uses expiring, revocable, high-entropy bearer links.
+- Issued short file codes are never reassigned within an installation, even after metadata purge; retain only their canonical code in a permanent registry.
 - The API is the integration contract. Ship an agent skill and OpenAPI document; native MCP and CLI packaging are later enhancements.
 - One app process and app-owned volume, no horizontal replicas. Only new synthetic fixtures, credentials, media, and test databases.
 - Never recursively copy source or import Git/runtime data. Exact paths: [source-import.md](../../source-import.md). Raw provenance stays ignored. Preserve public/noreply identity; review entire staged diffs and redact scanner matches.
@@ -33,14 +34,14 @@ Read [design](../specs/2026-10-10-agentfiles-open-source-design.md), [findings/r
 | D | D1–D2 | OpenAPI, real agent clients, browser/phone handoff | [Agent and browser](2026-10-10-agentfiles-phase-d.md) |
 | E | E1–E3 | CI, upgrade/restore, clean public-clone release acceptance | [Release](2026-10-10-agentfiles-phase-e.md) |
 
-Each task ends with checks and an explicit-path commit. Review each phase before the next. First implementation boundary after written-plan review: **A1–A3 only**. Later phases are concrete for interface review now, not execution in this planning session.
+Each task ends with checks and an explicit-path commit. Review each phase before the next. Current approved implementation boundary (see [execution evidence](../../verification/phase-a.md)): **A1–A3 only, implemented locally**. Later phases are concrete for interface review now, not execution under Phase A approval.
 
 ## Shared interface decisions
 
 1. Preserve routes and File DTO aliases. No `/v1` rename. Add optional `code` to existing `{error}`. Status: malformed 400, auth 401/403, missing 404, expired 410, multipart/file size 413, throttle/concurrency 429 with `Retry-After`, capacity 507, readiness 503. Hidden deleted-file lookup stays 404; expired pre-cleanup lookup is 410. Missing active bytes yield controlled 500, never raw paths.
 2. `NODE_ENV=production` governs optimized behavior; `DEPLOYMENT_MODE=local|public` governs origin/cookie transport. Local is loopback HTTP, no proxy trust, loopback published port. Public is external HTTPS, Secure cookie, explicit trusted proxy addresses. Both enforce auth, validation, limits, and secrets.
-3. Defaults: seven-day retention; 1 GiB file limit; 10 GiB managed ceiling; 1 GiB free reserve; four concurrent uploads; one-hour cleanup; 24-hour orphan grace; 100-file batches; 30-day deleted-metadata/event retention. B1 defines every setting. Deleted rows reserve codes during metadata retention; code reuse may occur after purge. Agents compare instance, code, checksum and creation time rather than treat codes as permanent identity.
-4. Persistence requires per-operation intent, installation `ALLOW_PERSISTENT_FILES=true`, and `can_mark_durable`. Denied intent returns 403. Temporary null expiry fails closed and violates DB constraint. Disabling persistence starts a fresh default interval. No first-download file deletion.
+3. Defaults: seven-day retention; 1 GiB file limit; 10 GiB managed ceiling; 1 GiB free reserve; four concurrent uploads; one-hour cleanup; 24-hour orphan grace; 100-file batches; 30-day deleted-metadata/event retention. B1 defines every setting. Permanent `issued_file_codes(code PRIMARY KEY)` contains only canonical codes, no file metadata, and survives metadata/event/share purge. Registry+file allocation is atomic; collisions retry up to 32 candidates without replaying the stream, then 503 `CODE_ALLOCATION_RETRY_EXHAUSTED`; proven full namespace returns 507 `CODE_SPACE_EXHAUSTED`, never reuse. Preserve the complete registry on restore or disable new issuance. Agents also compare instance, checksum and creation time.
+4. Persistence requires per-operation intent, installation `ALLOW_PERSISTENT_FILES=true`, and `can_mark_durable`. Denied intent returns 403. Temporary null expiry fails closed and violates DB constraint. Disabling persistence starts a fresh default interval. Retention changes and cleanup/manual deletion lock the same row: retention commits while active, or deletion commits `deleting` plus claim before unlink. Cleanup revalidates expiry under lock. Keep that wins prevents stale cleanup deletion; deletion that wins causes keep 409 `FILE_DELETION_IN_PROGRESS` (deleted/missing stays 404), never false success. Claims remain unavailable and recoverable after DB/filesystem failures; only confirmed absence permits `deleted`. No first-download file deletion.
 5. Shares use 32 random bytes, stored hashed, with mandatory future expiry bounded by file expiry and optional atomic request-admission count. Expiry/revocation blocks new transfers; it cannot retract delivered bytes and does not terminate a transfer already started. Range/resumable downloads and transcoding are deferred; phone previews/downloads still must pass on advertised browsers.
 6. Agent connection check is `GET /api/auth/session`, examining `authenticated`. New `GET /api/instance` supplies only configured origin, retention, upload limit, persistence policy and skill URL. Admin storage usage retains `bytes` plus capacity/cleanup details. New `/api/ready` checks DB/expected schema with timeout; liveness remains independent.
 7. Setup is an exclusive `.env` writer via optional tool container or host Node, hidden password prompt, no web wizard. Document/test filesystem ownership and Windows permissions. Never use reference config.
@@ -48,6 +49,6 @@ Each task ends with checks and an explicit-path commit. Review each phase before
 
 ## Remaining evidence and reporting
 
-No product decision blocks this plan. Before distribution, establish source redistribution rights/notices. Before release, confirm private security reporting, actually tested OS/architectures, and container publishing mechanism if enabled. Select image digests after successful builds. These do not reopen hosting/billing scope.
+No product decision blocks this plan. The owner's original code is authorized for MIT licensing; inspect individual third-party material and record required notices before distribution. Before release, confirm private security reporting, actually tested OS/architectures, and container publishing mechanism if enabled. Select image digests after successful builds. These do not reopen hosting/billing scope or require renewed blanket approval of the owner's code.
 
 Record executed commands, exact public commit, environment/image versions, synthetic fixtures, observed results and limitations. Raw logs stay ignored; summaries are redacted. Unit tests, clean installation, and deployed behavior are distinct claims. This project was not deployed in planning.

@@ -6,17 +6,22 @@ Upload through an HTTP API, pass a short file code to another authorized agent, 
 
 ## Project status
 
-AgentFiles is in preparation. This repository currently contains its open source scope and implementation plan; an installable application has not been released yet.
+AgentFiles is in preparation. The reviewed MIT source baseline and initial agent skill are now present; an installable application has not been released yet. Setup, standalone Compose, lifecycle hardening, and release acceptance remain planned work.
 
 The first release will include a complete self-hosted application, Docker Compose installation, a mobile-friendly browser interface, API documentation, and an agent skill. No paid account or hosted-service dependency will be required to run it.
 
 - [Product scope](docs/superpowers/specs/2026-10-10-agentfiles-open-source-design.md)
 - [Implementation plan](docs/superpowers/plans/2026-10-10-agentfiles-open-source.md)
 - [Source-verified findings](docs/audit/2026-10-10-source-findings.md)
-- [Proposed exact source import allowlist](docs/source-import.md)
+- [Exact reviewed source import](docs/source-import.md)
+- [Phase A verification](docs/verification/phase-a.md)
+- [Agent skill](skills/agentfiles/SKILL.md) and [HTTP examples](docs/agents.md)
+- [Dependency review](docs/dependencies.md) and [third-party notices](THIRD_PARTY_NOTICES.md)
 - [Release acceptance checklist](docs/release-checklist.md)
 
-The planning audit is complete. It proposes five reviewable implementation phases; no application code has been imported, and application tests or installation acceptance have not been run. The first implementation checkpoint is sanitized source, independent baseline verification, and the initial agent Markdown skill.
+Phase A imported 42 individually reviewed files and verified the isolated baseline. Unit tests, server/client typechecks, and the production build pass; these checks do not establish clean installation or deployed behavior. The agent skill is drafted from source, with application HTTP round-trip verification pending Phase D. See the verification report for exact results and limitations.
+
+Source verification uses Node 24: `npm ci`, `npm test`, `npm run typecheck`, and `npm run build`. These are contributor checks; standalone setup instructions arrive in Phase B. The public cookie/key formats differ from the reference application; see [migration notes](docs/migration-notes.md).
 
 ## Intended workflow
 

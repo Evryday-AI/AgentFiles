@@ -1,6 +1,6 @@
 # AgentFiles v0.1 release acceptance
 
-Planning status (2026-10-10): source/config/test inspection and independent dependency-metadata audit completed; application source import, tests, build, clean install and deployment have **not** occurred. All release gates below remain unchecked. See [findings](audit/2026-10-10-source-findings.md) and [phased plan](superpowers/plans/2026-10-10-agentfiles-open-source.md).
+Planning audit snapshot (2026-10-10): source/config/test inspection and independent dependency-metadata audit completed; that audit executed no application source import, tests, build, clean install or deployment. Phase A now has [local baseline evidence](verification/phase-a.md); the complete release gates below remain unchecked until their release evidence is recorded. See [findings](audit/2026-10-10-source-findings.md) and [phased plan](superpowers/plans/2026-10-10-agentfiles-open-source.md).
 
 For each checked gate, record exact public commit, executed command/scenario, environment/image versions, observed result and limitation in `docs/verification/v0.1.0.md`. Raw logs/provenance remain ignored. Inspection, mocked tests, real integration, clean installation and deployed behavior are separate evidence categories.
 
@@ -21,6 +21,7 @@ For each checked gate, record exact public commit, executed command/scenario, en
 - [ ] Tool-container setup works before `.env` exists; prompt/output/Compose interpolation and host file ownership are verified.
 - [ ] Compose validates, database health gates migrations, and migrations gate app startup.
 - [ ] Data survives container recreation; no volumes are destroyed by normal update instructions.
+- [ ] Restore preserves the permanent code registry and pending deletion claims; older snapshots merge independently preserved later-issued reservations, and uploads remain disabled if complete issuance evidence is unavailable.
 - [ ] Local-only HTTP and public HTTPS setups have separate verified instructions.
 - [ ] Deployment mode governs origin/cookie/proxy trust independently of production optimization; no arbitrary forwarded-header trust.
 - [ ] Readiness checks DB and version/checksum ledger; liveness remains process-only; migration failure stops app startup.
@@ -32,6 +33,10 @@ For each checked gate, record exact public commit, executed command/scenario, en
 - [ ] Short code alone cannot bypass authentication; insufficient key permissions are rejected.
 - [ ] Explicit invalid Bearer token cannot inherit admin-cookie authority; cookie mutations reject cross-origin browser requests.
 - [ ] Forbidden persistence intent returns 403; temporary null expiry fails closed and violates the schema invariant.
+- [ ] Keep/retention changes and cleanup/manual deletion use one atomic row-lock/claim protocol: ordered keep-first prevents stale cleanup unlink, ordered delete-first rejects keep without false success, and expired unclaimed keep returns 410.
+- [ ] Persisted deletion claims deny new metadata/download/share/keep; claim/unlink/finalization/retention DB failures recover without resurrection, uncertain unlinks or premature capacity release.
+- [ ] Issued short codes are never reassigned after metadata/event/share purge; permanent registry stores only canonical code and old authenticated lookup cannot resolve a newly uploaded file.
+- [ ] Registry collision retries and concurrent allocation preserve earlier files; bounded retry exhaustion differs from proven namespace exhaustion and never recycles codes.
 - [ ] Expired files cannot be accessed before or after cleanup.
 - [ ] Cleanup removes bytes, safely retries failures, and preserves active uploads.
 - [ ] More than 100 expired files are swept fairly; failed first batches cannot starve later files.
@@ -40,7 +45,7 @@ For each checked gate, record exact public commit, executed command/scenario, en
 - [ ] Upload size, capacity, and concurrent-upload limits are enforced.
 - [ ] Exact file-size/truncation/abort/metadata-failure and concurrent reservations are proven with real DB/disk; retained failed-cleanup bytes remain charged.
 - [ ] Logs redact credentials, cookies, and public share tokens.
-- [ ] Metadata/log/backup retention is explicitly described.
+- [ ] Byte/deleted-metadata/event/session/log/backup retention and permanent code-only reservation growth are explicitly described.
 - [ ] Expiry/revocation and share request-count guarantees distinguish admitted transfers from completed delivery.
 
 ## Agent and browser experience
@@ -74,6 +79,6 @@ For each checked gate, record exact public commit, executed command/scenario, en
 | Owned installation | B4, E2, E3 | Fresh volumes/services, restart, upgrade, isolated restore, public-clone smoke |
 | Auth/input/log hygiene | C1 | Real key/session matrix, exact expiry boundary, cookie origin defense, captured redacted logs |
 | Upload/capacity | C2 | Chunked/exact limits, truncation, failures, concurrent reservations and no overwrite |
-| Cleanup/retention | C3, E2 | Real byte deletion/retries, >100 fairness, orphan clocks/active leases, actual process crash |
+| Cleanup/retention/identity | C1–C3, E2 | Real ordered keep/delete arbitration and failure recovery, permanent code-only registry/post-purge old-code regression, >100 fairness, orphan clocks/active leases, actual claim/upload crash and complete-registry restore |
 | API/skill/phone | D1, D2 | Spec validation, actual curl/Python SHA round trips, rendered browser/download checks |
 | CI/security/release | E1, E3 | Confirmed private reporting, observed exact-commit CI, inspected artifacts/checksums |

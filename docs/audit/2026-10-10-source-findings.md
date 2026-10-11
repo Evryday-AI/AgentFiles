@@ -1,6 +1,6 @@
 # Source-verified planning audit
 
-Date: 2026-10-10. Scope: read-only source/config/test inspection and independent dependency metadata audit. AgentFiles remains documentation only.
+Date: 2026-10-10. Scope: read-only source/config/test inspection and independent dependency metadata audit. AgentFiles was documentation only at this audit boundary; Phase A is now implemented locally, with [execution evidence](../verification/phase-a.md) recorded separately.
 
 ## Evidence and limits
 
@@ -8,7 +8,7 @@ The independent public repository has its own `.git`, the intended public remote
 
 The proposed import contains 42 regular text-file candidates. Source inspection counted **82 `it()` cases in 11 test files**. No `npm ci`, application tests, application build, Postgres integration, browser session, clean install, deployment, or restore was run. Do not relabel any of those gates passed. The audit copied only two package metadata files into ignored local audit storage and ran registry audits there, without installing packages or executing lifecycle scripts.
 
-The installed audit tools reported Node 24.21.0, npm 11.19.0, and Docker Compose 5.1.4. Their presence is not evidence that the Docker engine or an application container works. A dedicated secret scanner was not available in PATH and was not run this session. Staged documentation passed diff validation, local-link checks and a redacted private-identifier/credential-pattern review with zero findings; all 42 candidate hashes remained unchanged. Those checks are narrower than a dedicated secret scan, which A1/E3 still require.
+The installed audit tools reported Node 24.21.0, npm 11.19.0, and Docker Compose 5.1.4. Their presence is not evidence that the Docker engine or an application container works. A dedicated secret scanner was not available in PATH during the planning audit and was not run at that boundary; Phase A later adds dedicated scan evidence. Staged documentation passed diff validation, local-link checks and a redacted private-identifier/credential-pattern review with zero findings; all 42 candidate hashes remained unchanged. Those checks are narrower than a dedicated secret scan, which A1/E3 still require.
 
 ## Confirmed application contract
 
@@ -93,4 +93,6 @@ Preserve the seed's agreed MIT complete self-hosted scope. Select Node 24 LTS an
 
 Choose one app process and one app-owned disk volume. Persistence is enabled as an administrator policy, never automatic, and temporary null expiry becomes invalid. Keep seven-day default retention. Draft the agent skill directly after sanitized foundation; only declare it verified after real HTTP clients pass. Setup supports a tool container so host Node is optional. No need to reopen stack, billing, account/tenancy, protocol, or default-retention decisions.
 
-Remaining release decisions/evidence: source redistribution/attribution basis; confirmed private security-reporting channel; which OS/architectures actually pass installation; container registry/publishing mechanism if container distribution is enabled. These do not block writing this plan. The next authorized implementation boundary, after written-plan review, is A1–A3 only.
+The owner authorizes MIT licensing and import of their original code; individual third-party contributions/dependencies/assets still require inspection and correct notices. Phase A (A1–A3) is now implemented locally; publication remains separate. Remaining release evidence: third-party attribution/notices; confirmed private security-reporting channel; which OS/architectures actually pass installation; container registry/publishing mechanism if container distribution is enabled. Do not implement B/C under Phase A authorization.
+
+Approved lifecycle requirements added after source inspection: issued short codes must never be reassigned within an installation, even after metadata purge. Phase C specifies a permanent `issued_file_codes(code PRIMARY KEY)` with no file metadata, atomic registry/file allocation, bounded collision retries and explicit namespace exhaustion. Retention changes including keep indefinitely and cleanup/manual deletion must arbitrate through the same row lock and committed deletion claim; keep-first protects against stale cleanup, delete-first rejects keep, and failed/uncertain DB/filesystem steps recover without resurrection. Later real-PG/filesystem regressions must prove both ordered outcomes and that a purged old code cannot resolve a new file. Coordinated restore preserves the full registry, merges independently preserved issuance after an older backup, and disables new issuance if completeness cannot be established. These are design/acceptance decisions, not newly executed source, concurrency, installation or restore evidence.

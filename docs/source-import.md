@@ -1,12 +1,12 @@
-# Proposed sanitized source import
+# Sanitized source import manifest
 
-Date: 2026-10-10. Status: proposed allowlist; **nothing has been imported**.
+Date: 2026-10-10. Status: **42 individually reviewed text files imported locally for Phase A**. Dependency verification, notices and final staged privacy scans are separate checkpoint evidence; this import is not a release or an installation guarantee.
 
-The source is an owner-supplied, read-only reference. Its location, revision, working-tree state, file hashes, and raw scans are recorded only in ignored `.private/audit/`. A future import must compare that inventory with the reference again. Changes require another review; this document does not authorize importing future files or runtime data.
+The source is an owner-supplied, read-only reference. Its location, revision, working-tree state, file hashes, and raw scans are recorded only in ignored `.private/audit/`. The import matched all 42 inventory hashes and the recorded revision. The reference was never executed or modified. Any later import must compare its inventory with the reference again; this manifest does not authorize additional files or runtime data.
 
 ## Exact allowlist
 
-These are 42 regular text-file candidates: 25 application files, 11 test files, and six build/package files. The candidate inventory found no reparse points. Entries are individually selected; directory wildcards and recursive copying are prohibited. Destination paths are identical to the paths below.
+These are the 42 imported regular UTF-8 text files: 25 application files, 11 test files, and six build/package files. None of the candidate files or destination ancestors is a reparse point. Two source ancestors had verified Microsoft Cloud Files tags, no redirect target, and every opened candidate's final resolved path matched its expected path under the source root. Redirecting or unknown reparse tags remain prohibited. Entries were copied individually; directory wildcards and recursive copying are prohibited. Destination paths are identical to the paths below.
 
 | Path | Treatment before public commit |
 |---|---|
@@ -53,7 +53,7 @@ These are 42 regular text-file candidates: 25 application files, 11 test files, 
 | `vite.config.ts` | Retain assets/proxy contract, with loopback development bind. |
 | `vitest.config.ts` | Retain baseline runner; separate unit/integration/DOM test projects as needed. |
 
-This is a proposed path list, not a completed line-by-line redistribution approval. Before copying each candidate, inspect its **entire current content**, copyright/provenance, imports, and path type, compare its local hash, and record approval in the ignored inventory. Review the complete transformed staged diff again before committing.
+The complete application, test and configuration text was read before importing, including the preview component absent from the reference graph inventory. The lockfile was parsed in full and all 350 entries reviewed for metadata fields, registry resolution, license declarations and install-script flags; installed package license texts and native/build-data notices are an A2 obligation. All relative imports point to reviewed allowlisted source or public package dependencies. Exact per-file approval and provenance stay ignored. Review the complete transformed staged diff again before committing.
 
 ## Exclusions and freshly authored replacements
 
@@ -68,11 +68,11 @@ Author `.env.example`, `Dockerfile`, `.dockerignore`, `compose.yaml`, setup scri
 - Preserve API route paths, `F-` codes, and DTO aliases (`size`/`size_bytes`, `expiry`/`expires_at`, `durable`/`is_durable`) during sanitization. Cookie/key-prefix differences belong in the public migration note.
 - Replace legacy synthetic database labels with `agentfiles_test`, temp prefixes with `agentfiles-`, multipart boundary labels with `agentfiles-test-boundary`, and reserved branded hostnames with `files.example.com`. Synthetic passwords/hashes stay clearly test-only; scanner exceptions must target the specific fixture rather than whole tests directories.
 - Do not insert machine-specific filesystem paths. Use `mkdtemp`, `tmpdir`, configured storage roots, and reserved example domains.
-- The source inventory does not include a standalone source license. Confirm the maintainer's redistribution rights and preserve any required notices before importing source. The user's MIT decision is the target license; it does not establish rights over third-party contributions or assets.
+- The maintainer stated that the original application code is theirs and authorized licensing it under MIT. Source publication is separate from this local import checkpoint. Complete source review found no conflicting copyright headers, external contribution attribution, copied asset notices or vendored third-party source. The UI uses authored CSS, system-font names and basic inline SVG shapes; no font, media or icon-library files were imported. Public dependencies retain their own licenses and require the exact-version notices review in A2. New concrete third-party ownership evidence would require specific review.
 
 ## Verification and evidence
 
-Future A1/A2 must record: exact imported count, reviewed sanitized diff, public identity, full-history secret scan, identifier review, package/license results, unit-test count/results, server/client typecheck and build. Counts in the audit are source-inspection counts, not passing-test claims. Inspect every candidate even if automated checks find nothing.
+A1/A2 must record: exact imported count, reviewed sanitized diff, public identity, full-history secret scan, identifier review, package/license results, unit-test count/results, server/client typecheck and build. The import count is 42; it is not a passing-test count. See the [Phase A verification record](verification/phase-a.md) for executed checks and remaining evidence. Inspect every future candidate even if automated checks find nothing.
 
 Use explicit `git add` paths. Run `git diff --cached --check`, read the full staged diff, and run a redacting secret scanner on the staged export and independent public history. Private identifier matching must load its patterns from ignored local provenance and report only category/count/path; never print matched values. A failed scan prevents the source commit until resolved. Repeat scanning on release artifacts.
 
