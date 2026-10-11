@@ -6,7 +6,10 @@ import { testConfig } from "../helpers/config";
 import type { Queryable } from "../../src/server/db";
 import type { FileRecord } from "../../src/server/filesRepo";
 import { buildServer } from "../../src/server/index";
-import { registerShareRoutes, type ShareRoutesDependencies } from "../../src/server/shareRoutes";
+import {
+  registerShareRoutes,
+  type ShareRoutesDependencies,
+} from "../../src/server/shareRoutes";
 
 const now = new Date("2026-06-07T18:00:00.000Z");
 const shareExpiresAt = new Date("2026-06-08T18:00:00.000Z");
@@ -41,6 +44,10 @@ function fileRecord(overrides: Partial<FileRecord> = {}): FileRecord {
     isDurable: false,
     deletedAt: null,
     deletedReason: null,
+    lifecycleState: "active",
+    deletionClaimId: null,
+    deletionClaimedAt: null,
+    deletionClaimReason: null,
     sha256: "a".repeat(64),
     thumbnailKey: null,
     metadata: {},
@@ -104,12 +111,15 @@ const downloadClaimRow = {
   download_is_durable: false,
   download_deleted_at: null,
   download_deleted_reason: null,
+  download_lifecycle_state: "active",
   download_sha256: "a".repeat(64),
   download_thumbnail_key: null,
   download_metadata: {},
 };
 
-async function buildTestServer(dependencies: Partial<ShareRoutesDependencies> = {}) {
+async function buildTestServer(
+  dependencies: Partial<ShareRoutesDependencies> = {},
+) {
   const server = Fastify({ logger: false });
   await server.register(registerShareRoutes, {
     config: baseConfig,
@@ -136,7 +146,9 @@ describe("share routes", () => {
   });
 
   it("creates a public share URL for principals with share permission", async () => {
-    const createShareLink = vi.fn(async (input) => shareRecord({ tokenHash: input.tokenHash }));
+    const createShareLink = vi.fn(async (input) =>
+      shareRecord({ tokenHash: input.tokenHash }),
+    );
     const server = await buildTestServer({
       repo: {
         findFileByCode: vi.fn(async () => fileRecord()),
@@ -163,7 +175,9 @@ describe("share routes", () => {
       max_downloads: 2,
       download_count: 0,
     });
-    expect(body.public_url).toMatch(/^http:\/\/localhost:3000\/s\/[A-Za-z0-9_-]+$/);
+    expect(body.public_url).toMatch(
+      /^http:\/\/localhost:3000\/s\/[A-Za-z0-9_-]+$/,
+    );
     expect(createShareLink).toHaveBeenCalledWith(
       expect.objectContaining({
         fileId: "018f35c2-0000-7000-9000-000000000001",
@@ -269,7 +283,9 @@ describe("share routes", () => {
 
   it("streams public downloads without requiring authentication", async () => {
     const resolvePrincipal = vi.fn();
-    const claimShareDownload = vi.fn(async () => shareRecord({ downloadCount: 1 }));
+    const claimShareDownload = vi.fn(async () =>
+      shareRecord({ downloadCount: 1 }),
+    );
     const openDownloadStream = vi.fn(async () => Readable.from(["hello"]));
     const server = await buildTestServer({
       resolvePrincipal,
@@ -277,13 +293,16 @@ describe("share routes", () => {
       storage: { openDownloadStream },
     });
 
-    const response = await server.inject({ method: "GET", url: "/s/public-token" });
+    const response = await server.inject({
+      method: "GET",
+      url: "/s/public-token",
+    });
 
     expect(response.statusCode).toBe(200);
     expect(response.body).toBe("hello");
     expect(response.headers["content-type"]).toBe("text/plain");
     expect(response.headers["content-disposition"]).toBe(
-      'attachment; filename="hello.txt"; filename*=UTF-8\'\'hello.txt',
+      "attachment; filename=\"hello.txt\"; filename*=UTF-8''hello.txt",
     );
     expect(resolvePrincipal).not.toHaveBeenCalled();
     expect(claimShareDownload).toHaveBeenCalledWith(
@@ -308,7 +327,10 @@ describe("share routes", () => {
       storage: { openDownloadStream },
     });
 
-    const response = await server.inject({ method: "GET", url: "/s/deleted-at-claim" });
+    const response = await server.inject({
+      method: "GET",
+      url: "/s/deleted-at-claim",
+    });
 
     expect(response.statusCode).toBe(410);
     expect(claimShareDownload).toHaveBeenCalledOnce();
@@ -325,18 +347,23 @@ describe("share routes", () => {
       storage: { openDownloadStream },
     });
 
-    const response = await server.inject({ method: "GET", url: "/s/public-token" });
+    const response = await server.inject({
+      method: "GET",
+      url: "/s/public-token",
+    });
 
     expect(response.statusCode).toBe(200);
     expect(response.body).toBe("hello");
     expect(client.calls).toHaveLength(1);
     expect(client.calls[0]?.text).toContain("UPDATE share_links");
-    expect(client.calls[0]?.text).toContain("JOIN files f ON f.id = updated.file_id");
+    expect(client.calls[0]?.text).toContain(
+      "JOIN files f ON f.id = updated.file_id",
+    );
     expect(client.calls[0]?.text).toContain("sl.token_hash = $1");
     expect(client.calls[0]?.text).toContain("sl.revoked_at IS NULL");
     expect(client.calls[0]?.text).toContain("sl.expires_at > $2");
     expect(client.calls[0]?.text).toContain(
-      "(f.is_durable OR f.expires_at IS NULL OR f.expires_at > $2)",
+      "(f.is_durable OR f.expires_at > $2)",
     );
     expect(client.calls[0]?.text).toContain(
       "(sl.max_downloads IS NULL OR sl.download_count < sl.max_downloads)",
@@ -363,7 +390,10 @@ describe("share routes", () => {
       storage: { openDownloadStream },
     });
 
-    const response = await server.inject({ method: "GET", url: "/s/deleted-at-claim" });
+    const response = await server.inject({
+      method: "GET",
+      url: "/s/deleted-at-claim",
+    });
 
     expect(response.statusCode).toBe(410);
     expect(client.calls).toHaveLength(1);
@@ -381,7 +411,10 @@ describe("share routes", () => {
       storage: { openDownloadStream },
     });
 
-    const response = await server.inject({ method: "GET", url: "/s/exhausted" });
+    const response = await server.inject({
+      method: "GET",
+      url: "/s/exhausted",
+    });
 
     expect(response.statusCode).toBe(410);
     expect(claimShareDownload).toHaveBeenCalledOnce();
@@ -394,24 +427,76 @@ describe("share routes", () => {
     const claimShareDownload = vi.fn(async () =>
       shareRecord({
         file: fileRecord({
-          originalName: "bad\r\nname\";.txt",
+          originalName: 'bad\r\nname";.txt',
           mimeType: "text/plain\r\nx-injected: yes",
         }),
       }),
     );
     const server = await buildTestServer({
       repo: { claimShareDownload },
-      storage: { openDownloadStream: vi.fn(async () => Readable.from(["hello"])) },
+      storage: {
+        openDownloadStream: vi.fn(async () => Readable.from(["hello"])),
+      },
     });
 
-    const response = await server.inject({ method: "GET", url: "/s/public-token" });
+    const response = await server.inject({
+      method: "GET",
+      url: "/s/public-token",
+    });
 
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toBe("application/octet-stream");
     expect(response.headers["content-disposition"]).toBe(
-      'attachment; filename="bad_name_.txt"; filename*=UTF-8\'\'bad_name%22%3B.txt',
+      "attachment; filename=\"bad_name_.txt\"; filename*=UTF-8''bad_name%22%3B.txt",
     );
 
     await server.close();
   });
+});
+
+describe("shared availability admission boundaries", () => {
+  it.each([
+    [
+      "one millisecond before expiry",
+      { expiresAt: new Date(now.getTime() + 1) },
+      200,
+    ],
+    ["exact expiry", { expiresAt: now }, 410],
+    ["after expiry", { expiresAt: new Date(now.getTime() - 1) }, 410],
+    ["temporary null expiry", { expiresAt: null }, 410],
+    ["deletion claim", { lifecycleState: "deleting" }, 410],
+    ["deleted file", { deletedAt: now, lifecycleState: "deleted" }, 410],
+  ])(
+    "%s cannot expose public bytes or create a share",
+    async (_label, overrides, status) => {
+      const file = fileRecord(overrides as Partial<FileRecord>);
+      const openDownloadStream = vi.fn(async () => Readable.from(["hello"]));
+      const createShareLink = vi.fn(async () => shareRecord());
+      const server = await buildTestServer({
+        repo: {
+          findFileByCode: async () => file,
+          createShareLink,
+          claimShareDownload: async () => shareRecord({ file }),
+        },
+        storage: { openDownloadStream },
+      });
+      try {
+        expect((await server.inject("/s/synthetic-token")).statusCode).toBe(
+          status,
+        );
+        if (status !== 200) {
+          const response = await server.inject({
+            method: "POST",
+            url: "/api/files/F-ABCDE/share",
+            payload: { expires_at: shareExpiresAt.toISOString() },
+          });
+          expect(response.statusCode).toBe(file.deletedAt ? 404 : 410);
+          expect(createShareLink).not.toHaveBeenCalled();
+          expect(openDownloadStream).not.toHaveBeenCalled();
+        }
+      } finally {
+        await server.close();
+      }
+    },
+  );
 });

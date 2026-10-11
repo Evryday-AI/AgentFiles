@@ -1,13 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { link, mkdir, readdir, rm, stat } from "node:fs/promises";
-import { basename, extname, join, resolve, sep } from "node:path";
-import { Transform } from "node:stream";
+import { link, mkdir, readdir, rm, rmdir, stat } from "node:fs/promises";
+import { basename, dirname, extname, join, resolve, sep } from "node:path";
+import { Transform, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 export interface SaveUploadInput {
   storageRoot: string;
-  code: string;
+  code?: string;
   originalName: string;
   stream: NodeJS.ReadableStream;
 }
@@ -18,9 +18,15 @@ export interface SavedUpload {
   sha256: string;
 }
 
-export async function saveUploadStream(input: SaveUploadInput): Promise<SavedUpload> {
+export const MULTIPART_IDLE_TIMEOUT_MS = 30_000;
+
+export async function saveUploadStream(
+  input: SaveUploadInput,
+): Promise<SavedUpload> {
   const root = resolve(input.storageRoot);
-  const safeCode = sanitizePathPart(input.code);
+  // Placement is independent of the finite human-code namespace. Neither an
+  // uploaded filename nor a retried code candidate chooses existing byte paths.
+  const safeCode = randomBytes(16).toString("hex");
   const extension = sanitizeExtension(input.originalName);
   const storageKey = `${safeCode}/${safeCode}${extension}`;
   const finalPath = storagePath(root, storageKey);
@@ -32,8 +38,19 @@ export async function saveUploadStream(input: SaveUploadInput): Promise<SavedUpl
 
   const hash = createHash("sha256");
   let sizeBytes = 0;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const resetIdleTimer = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(
+      () =>
+        (input.stream as Readable).destroy(new Error("Upload idle timeout")),
+      MULTIPART_IDLE_TIMEOUT_MS,
+    );
+    idleTimer.unref();
+  };
   const meter = new Transform({
     transform(chunk: Buffer | string, _encoding, callback) {
+      resetIdleTimer();
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       sizeBytes += buffer.byteLength;
       hash.update(buffer);
@@ -42,12 +59,20 @@ export async function saveUploadStream(input: SaveUploadInput): Promise<SavedUpl
   });
 
   try {
-    await pipeline(input.stream, meter, createWriteStream(tmpPath, { flags: "wx" }));
+    resetIdleTimer();
+    await pipeline(
+      input.stream,
+      meter,
+      createWriteStream(tmpPath, { flags: "wx" }),
+    );
     await link(tmpPath, finalPath);
     await rm(tmpPath, { force: true });
   } catch (error) {
     await rm(tmpPath, { force: true });
+    await rmdir(dirname(finalPath)).catch(() => {});
     throw error;
+  } finally {
+    clearTimeout(idleTimer);
   }
 
   return {
@@ -66,22 +91,38 @@ export async function openDownloadStream(
   return createReadStream(filePath);
 }
 
-export async function deleteStoredFile(storageRoot: string, storageKey: string): Promise<void> {
-  await rm(storagePath(resolve(storageRoot), storageKey), { force: true });
+export async function deleteStoredFile(
+  storageRoot: string,
+  storageKey: string,
+): Promise<void> {
+  const root = resolve(storageRoot);
+  const path = storagePath(root, storageKey);
+  await rm(path, { force: true });
+  if (dirname(path) !== root) {
+    try {
+      await rmdir(dirname(path));
+    } catch (error) {
+      if (
+        !isNodeError(error) ||
+        !["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error.code ?? "")
+      )
+        throw error;
+    }
+  }
 }
 
-export async function getStorageUsage(storageRoot: string): Promise<{ bytes: number }> {
+export async function getStorageUsage(
+  storageRoot: string,
+): Promise<{ bytes: number }> {
   return { bytes: await countBytes(resolve(storageRoot)) };
-}
-
-function sanitizePathPart(value: string): string {
-  return value.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64) || "file";
 }
 
 function sanitizeExtension(originalName: string): string {
   const extension = extname(basename(originalName)).toLowerCase();
   const safeExtension = extension.replace(/[^.a-z0-9]/g, "");
-  return safeExtension.length > 1 && safeExtension.length <= 16 ? safeExtension : "";
+  return safeExtension.length > 1 && safeExtension.length <= 16
+    ? safeExtension
+    : "";
 }
 
 function storagePath(storageRoot: string, storageKey: string): string {

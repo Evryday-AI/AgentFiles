@@ -16,21 +16,21 @@ async function ledger() { return (await loadMigrations()).map(({ version, checks
 describe("readiness", () => {
   it("requires the complete expected version and checksums", async () => {
     const rows = await ledger();
-    expect(await checkReadiness(rowsDb(rows), 2)).toBe(true);
-    expect(await checkReadiness(rowsDb(rows.slice(0, 1)), 2)).toBe(false);
-    expect(await checkReadiness(rowsDb([...rows, { version: 3, checksum: "extra" }]), 2)).toBe(false);
-    expect(await checkReadiness(rowsDb([{ ...rows[0], checksum: "changed" }, rows[1]]), 2)).toBe(false);
-    expect(await checkReadiness(rowsDb(rows.reverse()), 2)).toBe(false);
+    expect(await checkReadiness(rowsDb(rows), 3)).toBe(true);
+    expect(await checkReadiness(rowsDb(rows.slice(0, 1)), 3)).toBe(false);
+    expect(await checkReadiness(rowsDb([...rows, { version: 4, checksum: "extra" }]), 3)).toBe(false);
+    expect(await checkReadiness(rowsDb([{ ...rows[0], checksum: "changed" }, rows[1]]), 3)).toBe(false);
+    expect(await checkReadiness(rowsDb(rows.reverse()), 3)).toBe(false);
     expect(await checkReadiness(rowsDb(await ledger()), 1)).toBe(false);
   });
   it("fails closed on database errors", async () => {
-    expect(await checkReadiness({ query: async () => { throw new Error("synthetic secret"); } }, 2)).toBe(false);
+    expect(await checkReadiness({ query: async () => { throw new Error("synthetic secret"); } }, 3)).toBe(false);
   });
   it("bounds a hanging query", async () => {
     vi.useFakeTimers();
     let called!: () => void;
     const began = new Promise<void>(resolve => { called = resolve; });
-    const result = checkReadiness({ query: () => { called(); return new Promise(() => {}); } }, 2);
+    const result = checkReadiness({ query: () => { called(); return new Promise(() => {}); } }, 3);
     await began;
     await vi.advanceTimersByTimeAsync(READINESS_TIMEOUT_MS);
     expect(await result).toBe(false);

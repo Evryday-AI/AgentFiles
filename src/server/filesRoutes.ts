@@ -1,6 +1,17 @@
 import fastifyMultipart, { type MultipartFile } from "@fastify/multipart";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { createFileCode } from "./fileCodes.js";
+import { fileIsAvailable, FilePolicyError } from "./filePolicy.js";
+import {
+  checkMutationPolicy,
+  registerResponsePolicy,
+  sendControlledError,
+  strictObject,
+  strictBoolean,
+  formBoolean,
+  boundedInteger,
+  invalidInput,
+  validateFilename,
+} from "./requestPolicy.js";
 import {
   principalHasPermission,
   resolvePrincipal as defaultResolvePrincipal,
@@ -13,7 +24,8 @@ import {
   createFileRecord,
   findFileByCode,
   listFiles,
-  markFileDeleted,
+  claimFileDeletion,
+  finalizeFileDeletion,
   setFileDurable,
   type CreateFileInput,
   type FileFilters,
@@ -28,31 +40,27 @@ import {
 } from "./storage.js";
 
 interface FilesRepo {
-  createFileRecord(input: CreateFileInput, client?: Queryable): Promise<FileRecord>;
+  createFileRecord(
+    input: CreateFileInput,
+    client?: Queryable,
+  ): Promise<FileRecord>;
   findFileByCode(code: string, client?: Queryable): Promise<FileRecord | null>;
   listFiles(filters?: FileFilters, client?: Queryable): Promise<FileRecord[]>;
-  markFileDeleted(code: string, client?: Queryable): Promise<FileRecord | null>;
-  setFileDurable(
-    code: string,
-    durable: true,
-    client?: Queryable,
-  ): Promise<FileRecord>;
-  setFileDurable(
-    code: string,
-    durable: false,
-    expiresAt: Date,
-    client?: Queryable,
-  ): Promise<FileRecord>;
+  claimFileDeletion: typeof claimFileDeletion;
+  finalizeFileDeletion: typeof finalizeFileDeletion;
+  setFileDurable: typeof setFileDurable;
 }
 
 interface FilesStorage {
   saveUploadStream(input: SaveUploadInput): Promise<SavedUpload>;
-  openDownloadStream(storageRoot: string, storageKey: string): Promise<NodeJS.ReadableStream>;
+  openDownloadStream(
+    storageRoot: string,
+    storageKey: string,
+  ): Promise<NodeJS.ReadableStream>;
   deleteStoredFile(storageRoot: string, storageKey: string): Promise<void>;
 }
 
 interface ParsedUpload {
-  code: string;
   filename: string;
   mimetype: string;
   fields: Record<string, unknown>;
@@ -75,7 +83,8 @@ const defaultRepo: FilesRepo = {
   createFileRecord,
   findFileByCode,
   listFiles,
-  markFileDeleted,
+  claimFileDeletion,
+  finalizeFileDeletion,
   setFileDurable,
 };
 
@@ -107,15 +116,18 @@ export async function registerFilesRoutes(
   server: FastifyInstance,
   dependencies: FilesRoutesDependencies,
 ) {
+  registerResponsePolicy(server);
+  server.setErrorHandler(sendControlledError);
   const config = dependencies.config;
   const db = dependencies.db;
   const repo = { ...defaultRepo, ...dependencies.repo };
   const storage = { ...defaultStorage, ...dependencies.storage };
   const now = dependencies.now ?? (() => new Date());
-  const resolvePrincipal = dependencies.resolvePrincipal ?? defaultResolvePrincipal;
+  const resolvePrincipal =
+    dependencies.resolvePrincipal ?? defaultResolvePrincipal;
 
   await server.register(fastifyMultipart, {
-    limits: multipartLimits,
+    limits: { ...multipartLimits, fileSize: config.maxUploadBytes },
   });
 
   async function requirePermission(
@@ -123,63 +135,104 @@ export async function registerFilesRoutes(
     reply: FastifyReply,
     permission: Permission,
   ): Promise<Principal | null> {
+    checkMutationPolicy(
+      request,
+      config,
+      request.headers.authorization === undefined &&
+        Boolean(request.cookies?.agentfiles_admin),
+    );
     const principal = await resolvePrincipal(request, { config, db });
     if (!principal) {
       reply.code(401).send({ error: "Authentication required" });
       return null;
     }
     if (!principalHasPermission(principal, permission)) {
-      reply.code(403).send({ error: "Permission denied" });
+      reply
+        .code(403)
+        .send({ error: "Permission denied", code: "PERMISSION_DENIED" });
       return null;
     }
+    checkMutationPolicy(request, config, principal.type === "admin");
     return principal;
   }
 
-  server.post("/api/files", async (request, reply) => {
-    const principal = await requirePermission(request, reply, "can_upload");
-    if (!principal) return reply;
-
-    let upload: ParsedUpload | null;
-    try {
-      upload = await readUploadRequest(request, config.storageRoot, storage);
-    } catch (error) {
-      if (isMultipartLimitError(error)) {
-        return reply
-          .code(413)
-          .send({ error: "Multipart upload exceeds configured limits" });
-      }
-      throw error;
-    }
-    if (!upload) {
-      return reply.code(400).send({ error: "A file upload is required" });
-    }
-
-    const durableRequested = parseFormBoolean(upload.fields.durable) === true;
-    const durable = durableRequested && principalHasPermission(principal, "can_mark_durable");
-
-    try {
-      const record = await repo.createFileRecord(
-        {
-          code: upload.code,
-          originalName: upload.filename,
-          storageKey: upload.saved.storageKey,
-          mimeType: normalizeUploadMimeType(upload.mimetype, upload.filename),
-          sizeBytes: upload.saved.sizeBytes,
-          uploadedByType: principal.type,
-          uploadedByName: principal.name,
-          expiresAt: durable ? null : retentionExpiry(config, now()),
-          isDurable: durable,
-          sha256: upload.saved.sha256,
-          metadata: {},
+  const uploadPrincipals = new WeakMap<FastifyRequest, Principal>();
+  const uploadLimiter = server.hasDecorator("rateLimit")
+    ? server.rateLimit({
+        max: 30,
+        timeWindow: "1 minute",
+        keyGenerator: (request) => {
+          const principal = uploadPrincipals.get(request);
+          return principal?.type === "api_key" ? principal.id : "admin";
         },
-        db,
-      );
-      return reply.code(201).send(publicFile(record, config));
-    } catch (error) {
-      await storage.deleteStoredFile(config.storageRoot, upload.saved.storageKey);
-      throw error;
-    }
-  });
+      })
+    : null;
+  server.post(
+    "/api/files",
+    {
+      onRequest: async (request, reply) => {
+        const principal = await requirePermission(request, reply, "can_upload");
+        if (!principal) return;
+        uploadPrincipals.set(request, principal);
+        if (uploadLimiter) await uploadLimiter.call(server, request, reply);
+      },
+    },
+    async (request, reply) => {
+      const principal = uploadPrincipals.get(request);
+      if (!principal) return reply;
+
+      let upload: ParsedUpload | null;
+      try {
+        upload = await readUploadRequest(
+          request,
+          config.storageRoot,
+          storage,
+          config.maxUploadBytes,
+        );
+      } catch (error) {
+        if (isMultipartLimitError(error)) {
+          return reply
+            .code(413)
+            .send({ error: "Multipart upload exceeds configured limits" });
+        }
+        throw error;
+      }
+      if (!upload) {
+        return reply.code(400).send({ error: "A file upload is required" });
+      }
+
+      try {
+        strictObject(upload.fields, ["durable"]);
+        const durable =
+          upload.fields.durable === undefined
+            ? false
+            : formBoolean(upload.fields.durable);
+        enforcePersistence(durable, principal, config);
+        const record = await repo.createFileRecord(
+          {
+            originalName: upload.filename,
+            storageKey: upload.saved.storageKey,
+            mimeType: normalizeUploadMimeType(upload.mimetype, upload.filename),
+            sizeBytes: upload.saved.sizeBytes,
+            uploadedByType: principal.type,
+            uploadedByName: principal.name,
+            expiresAt: durable ? null : retentionExpiry(config, now()),
+            isDurable: durable,
+            sha256: upload.saved.sha256,
+            metadata: {},
+          },
+          db,
+        );
+        return reply.code(201).send(publicFile(record, config));
+      } catch (error) {
+        await storage.deleteStoredFile(
+          config.storageRoot,
+          upload.saved.storageKey,
+        );
+        throw error;
+      }
+    },
+  );
 
   server.get("/api/files", async (request, reply) => {
     const principal = await requirePermission(request, reply, "can_list");
@@ -190,24 +243,31 @@ export async function registerFilesRoutes(
     const files = await repo.listFiles(filters, db);
     return {
       files: files
-        .filter((record) => isFileAvailable(record, currentTime))
+        .filter((record) => fileIsAvailable(record, currentTime))
         .map((record) => publicFile(record, config)),
     };
   });
 
-  server.get<{ Params: { code: string } }>("/api/files/:code", async (request, reply) => {
-    const principal = await requirePermission(request, reply, "can_download");
-    if (!principal) return reply;
+  server.get<{ Params: { code: string } }>(
+    "/api/files/:code",
+    async (request, reply) => {
+      const principal = await requirePermission(request, reply, "can_download");
+      if (!principal) return reply;
 
-    const record = await repo.findFileByCode(request.params.code, db);
-    if (!record) {
-      return reply.code(404).send({ error: "File not found" });
-    }
-    if (!isFileAvailable(record, now())) {
-      return reply.code(410).send({ error: "File has expired" });
-    }
-    return publicFile(record, config);
-  });
+      const record = await repo.findFileByCode(request.params.code, db);
+      if (
+        !record ||
+        record.deletedAt !== null ||
+        record.lifecycleState === "deleted"
+      ) {
+        return reply.code(404).send({ error: "File not found" });
+      }
+      if (!fileIsAvailable(record, now())) {
+        return reply.code(410).send({ error: "File has expired" });
+      }
+      return publicFile(record, config);
+    },
+  );
 
   server.get<{ Params: { code: string } }>(
     "/api/files/:code/download",
@@ -216,17 +276,27 @@ export async function registerFilesRoutes(
       if (!principal) return reply;
 
       const record = await repo.findFileByCode(request.params.code, db);
-      if (!record) {
+      if (
+        !record ||
+        record.deletedAt !== null ||
+        record.lifecycleState === "deleted"
+      ) {
         return reply.code(404).send({ error: "File not found" });
       }
-      if (!isFileAvailable(record, now())) {
+      if (!fileIsAvailable(record, now())) {
         return reply.code(410).send({ error: "File has expired" });
       }
 
-      const stream = await storage.openDownloadStream(config.storageRoot, record.storageKey);
+      const stream = await storage.openDownloadStream(
+        config.storageRoot,
+        record.storageKey,
+      );
       return reply
         .type(safeMimeType(record.mimeType))
-        .header("content-disposition", contentDispositionAttachment(record.originalName))
+        .header(
+          "content-disposition",
+          contentDispositionAttachment(record.originalName),
+        )
         .send(stream);
     },
   );
@@ -234,80 +304,90 @@ export async function registerFilesRoutes(
   server.patch<{ Params: { code: string }; Body: { durable?: unknown } }>(
     "/api/files/:code",
     async (request, reply) => {
-      const principal = await requirePermission(request, reply, "can_mark_durable");
+      const principal = await requirePermission(
+        request,
+        reply,
+        "can_mark_durable",
+      );
       if (!principal) return reply;
 
-      const durable = parseJsonBoolean(request.body?.durable);
-      if (durable === null) {
-        return reply.code(400).send({ error: "durable must be a boolean" });
-      }
-
-      const currentTime = now();
-      const existingRecord = await repo.findFileByCode(request.params.code, db);
-      if (!existingRecord) {
-        return reply.code(404).send({ error: "File not found" });
-      }
-      if (!isFileAvailable(existingRecord, currentTime)) {
-        return reply.code(410).send({ error: "File has expired" });
-      }
-
-      let record: FileRecord | null;
-      try {
-        record = durable
-          ? await repo.setFileDurable(request.params.code, true, db)
-          : await repo.setFileDurable(
-              request.params.code,
-              false,
-              retentionExpiry(config, currentTime),
-              db,
-            );
-      } catch (error) {
-        if (isFileNotFoundError(error, request.params.code)) {
-          const latestRecord = await repo.findFileByCode(request.params.code, db);
-          if (latestRecord && !isFileAvailable(latestRecord, now())) {
-            return reply.code(410).send({ error: "File has expired" });
-          }
-          return reply.code(404).send({ error: "File not found" });
-        }
-        throw error;
-      }
-      if (!record) {
-        return reply.code(404).send({ error: "File not found" });
-      }
+      const input = strictObject(request.body, ["durable"]);
+      const durable = strictBoolean(input.durable);
+      enforcePersistence(durable, principal, config);
+      const record = await repo.setFileDurable(
+        request.params.code,
+        durable,
+        undefined,
+        db,
+        {
+          now,
+          retentionDays: config.retentionDays,
+          authorize: async (pinned) => {
+            // Recheck principal permissions and operator policy under the file lock.
+            const lockedPrincipal = await resolvePrincipal(request, {
+              config,
+              db: pinned,
+            });
+            if (!lockedPrincipal)
+              throw new FilePolicyError(401, "Authentication required");
+            if (!principalHasPermission(lockedPrincipal, "can_mark_durable"))
+              throw new FilePolicyError(
+                403,
+                "Permission denied",
+                "PERMISSION_DENIED",
+              );
+            enforcePersistence(durable, lockedPrincipal, config);
+          },
+        },
+      );
       return publicFile(record, config);
     },
   );
 
-  server.delete<{ Params: { code: string } }>("/api/files/:code", async (request, reply) => {
-    const principal = await requirePermission(request, reply, "can_delete");
-    if (!principal) return reply;
+  server.delete<{ Params: { code: string } }>(
+    "/api/files/:code",
+    async (request, reply) => {
+      const principal = await requirePermission(request, reply, "can_delete");
+      if (!principal) return reply;
 
-    const record = await repo.findFileByCode(request.params.code, db);
-    if (!record) {
-      return reply.code(404).send({ error: "File not found" });
-    }
-
-    try {
-      await storage.deleteStoredFile(config.storageRoot, record.storageKey);
-    } catch (error) {
-      request.log.error({ error, code: record.code }, "Failed to delete stored file bytes");
-      return reply
-        .code(500)
-        .send({ error: "Stored bytes could not be removed; file was not deleted" });
-    }
-
-    const deletedRecord = await repo.markFileDeleted(request.params.code, db);
-    if (!deletedRecord) {
-      return reply.code(404).send({ error: "File not found" });
-    }
-    return { deleted: true, code: record.code };
-  });
+      if (request.body !== undefined) strictObject(request.body, []);
+      const record = await repo.claimFileDeletion(
+        request.params.code,
+        "manual",
+        db,
+        now,
+      );
+      if (!record) return reply.code(404).send({ error: "File not found" });
+      if (!record.deletionClaimId) throw new Error("Deletion claim missing");
+      try {
+        await storage.deleteStoredFile(config.storageRoot, record.storageKey);
+        if (record.thumbnailKey)
+          await storage.deleteStoredFile(
+            config.storageRoot,
+            record.thumbnailKey,
+          );
+        const deleted = await repo.finalizeFileDeletion(
+          record.code,
+          record.deletionClaimId,
+          db,
+        );
+        if (!deleted) throw new Error("Deletion finalization failed");
+      } catch {
+        request.log.error("File deletion failed; claim retained for recovery");
+        return reply
+          .code(500)
+          .send({ error: "File deletion could not be completed" });
+      }
+      return { deleted: true, code: record.code };
+    },
+  );
 }
 
 async function readUploadRequest(
   request: FastifyRequest,
   storageRoot: string,
   storage: FilesStorage,
+  maxUploadBytes: number,
 ): Promise<ParsedUpload | null> {
   const fields: Record<string, unknown> = {};
   let upload: ParsedUpload | null = null;
@@ -316,7 +396,9 @@ async function readUploadRequest(
   let partCount = 0;
 
   try {
-    for await (const part of request.parts({ limits: multipartLimits })) {
+    for await (const part of request.parts({
+      limits: { ...multipartLimits, fileSize: maxUploadBytes },
+    })) {
       partCount += 1;
       if (partCount > multipartLimits.parts) {
         throw multipartLimitError();
@@ -329,16 +411,19 @@ async function readUploadRequest(
           throw multipartLimitError();
         }
 
-        const code = createFileCode();
+        if (part.fieldname !== "file") invalidInput("Expected file part");
+        validateFilename(part.filename);
         const saved = await storage.saveUploadStream({
           storageRoot,
-          code,
           originalName: part.filename,
           stream: part.file,
         });
         await drainFilePart(part);
+        if (part.file.truncated) {
+          await storage.deleteStoredFile(storageRoot, saved.storageKey);
+          throw multipartLimitError();
+        }
         upload = {
-          code,
           filename: part.filename,
           mimetype: part.mimetype,
           fields,
@@ -353,12 +438,16 @@ async function readUploadRequest(
         ) {
           throw multipartLimitError();
         }
+        if (Object.hasOwn(fields, part.fieldname))
+          invalidInput("Duplicate multipart field");
         fields[part.fieldname] = part.value;
       }
     }
   } catch (error) {
     if (upload) {
-      await storage.deleteStoredFile(storageRoot, upload.saved.storageKey).catch(() => {});
+      await storage
+        .deleteStoredFile(storageRoot, upload.saved.storageKey)
+        .catch(() => {});
     }
     if (
       isErrorWithCode(error) &&
@@ -376,7 +465,9 @@ async function readUploadRequest(
 }
 
 function multipartLimitError(): Error & { statusCode: number } {
-  const error = new Error("Multipart upload exceeds configured limits") as Error & {
+  const error = new Error(
+    "Multipart upload exceeds configured limits",
+  ) as Error & {
     statusCode: number;
   };
   error.statusCode = 413;
@@ -399,53 +490,48 @@ async function drainFilePart(part: MultipartFile): Promise<void> {
       // Drain rejected extra files so the multipart parser can finish cleanly.
     }
   } catch (error) {
-    if (!isErrorWithCode(error) || error.code !== "ERR_STREAM_PREMATURE_CLOSE") {
+    if (
+      !isErrorWithCode(error) ||
+      error.code !== "ERR_STREAM_PREMATURE_CLOSE"
+    ) {
       throw error;
     }
   }
 }
 
-function parseFormBoolean(value: unknown): boolean | null {
-  if (value === true || value === "true" || value === "1" || value === "on") {
-    return true;
-  }
-  if (value === false || value === "false" || value === "0" || value === "off") {
-    return false;
-  }
-  return null;
-}
-
-function parseJsonBoolean(value: unknown): boolean | null {
-  return typeof value === "boolean" ? value : null;
-}
-
 function retentionExpiry(config: AppConfig, from: Date): Date {
-  return new Date(from.getTime() + config.retentionDays * 24 * 60 * 60 * 1000);
+  return new Date(from.getTime() + config.retentionDays * 86400000);
 }
 
-function isFileAvailable(record: FileRecord, at: Date): boolean {
-  return record.isDurable || record.expiresAt === null || record.expiresAt > at;
+function enforcePersistence(
+  durable: boolean,
+  principal: Principal,
+  config: AppConfig,
+): void {
+  if (!durable) return;
+  if (!config.allowPersistentFiles)
+    throw new FilePolicyError(
+      403,
+      "Persistence disabled by installation policy",
+      "PERSISTENCE_DISABLED",
+    );
+  if (!principalHasPermission(principal, "can_mark_durable"))
+    throw new FilePolicyError(403, "Permission denied", "PERMISSION_DENIED");
 }
 
 function listFilters(query: unknown): FileFilters {
-  const raw = query as Record<string, unknown>;
+  const raw = strictObject(query, ["limit", "offset", "durable"]);
   return {
-    limit: parseOptionalInteger(raw.limit),
-    offset: parseOptionalInteger(raw.offset),
-    isDurable: parseOptionalBoolean(raw.durable),
+    ...(raw.limit === undefined
+      ? {}
+      : { limit: boundedInteger(raw.limit, 1, 500) }),
+    ...(raw.offset === undefined
+      ? {}
+      : { offset: boundedInteger(raw.offset, 0, 2147483647) }),
+    ...(raw.durable === undefined
+      ? {}
+      : { isDurable: formBoolean(raw.durable) }),
   };
-}
-
-function parseOptionalInteger(value: unknown): number | undefined {
-  if (value === undefined) return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function parseOptionalBoolean(value: unknown): boolean | undefined {
-  if (value === undefined) return undefined;
-  const parsed = parseFormBoolean(value);
-  return parsed ?? undefined;
 }
 
 function publicFile(record: FileRecord, config: AppConfig) {
@@ -463,7 +549,10 @@ function publicFile(record: FileRecord, config: AppConfig) {
     is_durable: record.isDurable,
     sha256: record.sha256,
     private_url: absoluteUrl(config.publicBaseUrl, `/files/${record.code}`),
-    api_download_url: absoluteUrl(config.publicBaseUrl, `/api/files/${record.code}/download`),
+    api_download_url: absoluteUrl(
+      config.publicBaseUrl,
+      `/api/files/${record.code}/download`,
+    ),
     uploaded_by: {
       type: record.uploadedByType,
       name: record.uploadedByName,
@@ -489,15 +578,17 @@ function isMultipartLimitError(error: unknown): boolean {
   );
 }
 
-function isFileNotFoundError(error: unknown, code: string): boolean {
-  return error instanceof Error && error.message === `File not found: ${code}`;
-}
-
 function isErrorWithCode(error: unknown): error is { code: string } {
-  return typeof error === "object" && error !== null && typeof (error as { code?: unknown }).code === "string";
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    typeof (error as { code?: unknown }).code === "string"
+  );
 }
 
-function isErrorWithStatusCode(error: unknown): error is { statusCode: number } {
+function isErrorWithStatusCode(
+  error: unknown,
+): error is { statusCode: number } {
   return (
     typeof error === "object" &&
     error !== null &&
@@ -509,12 +600,17 @@ function safeMimeType(value: string | null | undefined): string {
   if (!value || /[\x00-\x1F\x7F]/.test(value)) {
     return "application/octet-stream";
   }
-  return /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(value)
+  return /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(
+    value,
+  )
     ? value
     : "application/octet-stream";
 }
 
-function normalizeUploadMimeType(value: string | null | undefined, filename: string): string {
+function normalizeUploadMimeType(
+  value: string | null | undefined,
+  filename: string,
+): string {
   const safeType = safeMimeType(value);
   if (safeType !== "application/octet-stream") {
     return safeType;
@@ -542,7 +638,8 @@ function asciiFallbackFilename(value: string): string {
 }
 
 function encodeRfc5987ValueChars(value: string): string {
-  return encodeURIComponent(value).replace(/['()*]/g, (character) =>
-    `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  return encodeURIComponent(value).replace(
+    /['()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
   );
 }

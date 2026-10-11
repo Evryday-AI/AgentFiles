@@ -1,16 +1,20 @@
+import { FilePolicyError } from "../../src/server/filePolicy";
 import { Readable } from "node:stream";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import type { Principal } from "../../src/server/auth";
 import { testConfig } from "../helpers/config";
-import { registerFilesRoutes, type FilesRoutesDependencies } from "../../src/server/filesRoutes";
+import {
+  registerFilesRoutes,
+  type FilesRoutesDependencies,
+} from "../../src/server/filesRoutes";
 import type { FileRecord } from "../../src/server/filesRepo";
 import { buildServer } from "../../src/server/index";
 
 const now = new Date("2026-06-07T18:00:00.000Z");
 const expiresAt = new Date("2026-06-14T18:00:00.000Z");
 
-const baseConfig = testConfig();
+const baseConfig = testConfig({ allowPersistentFiles: true });
 
 const apiKeyPrincipal: Principal = {
   type: "api_key",
@@ -40,6 +44,10 @@ function fileRecord(overrides: Partial<FileRecord> = {}): FileRecord {
     isDurable: false,
     deletedAt: null,
     deletedReason: null,
+    lifecycleState: "active",
+    deletionClaimId: null,
+    deletionClaimedAt: null,
+    deletionClaimReason: null,
     sha256: "a".repeat(64),
     thumbnailKey: null,
     metadata: {},
@@ -47,7 +55,9 @@ function fileRecord(overrides: Partial<FileRecord> = {}): FileRecord {
   };
 }
 
-async function buildTestServer(dependencies: Partial<FilesRoutesDependencies> = {}) {
+async function buildTestServer(
+  dependencies: Partial<FilesRoutesDependencies> = {},
+) {
   const server = Fastify({ logger: false });
   await server.register(registerFilesRoutes, {
     config: baseConfig,
@@ -59,7 +69,10 @@ async function buildTestServer(dependencies: Partial<FilesRoutesDependencies> = 
 }
 
 function multipartBody(
-  parts: Array<{ name: string; value: string } | { name: string; filename: string; contentType: string; value: string }>,
+  parts: Array<
+    | { name: string; value: string }
+    | { name: string; filename: string; contentType: string; value: string }
+  >,
 ) {
   const boundary = "agentfiles-test-boundary";
   const chunks: string[] = [];
@@ -73,7 +86,9 @@ function multipartBody(
       chunks.push(part.value);
       chunks.push("\r\n");
     } else {
-      chunks.push(`Content-Disposition: form-data; name="${part.name}"\r\n\r\n`);
+      chunks.push(
+        `Content-Disposition: form-data; name="${part.name}"\r\n\r\n`,
+      );
       chunks.push(part.value);
       chunks.push("\r\n");
     }
@@ -86,7 +101,10 @@ function multipartBody(
 }
 
 function delayedMultipartBody(
-  parts: Array<{ name: string; value: string } | { name: string; filename: string; contentType: string; value: string }>,
+  parts: Array<
+    | { name: string; value: string }
+    | { name: string; filename: string; contentType: string; value: string }
+  >,
 ) {
   const boundary = "agentfiles-test-boundary";
   async function* chunks() {
@@ -100,7 +118,9 @@ function delayedMultipartBody(
         yield Buffer.from(part.value);
         yield Buffer.from("\r\n");
       } else {
-        yield Buffer.from(`Content-Disposition: form-data; name="${part.name}"\r\n\r\n`);
+        yield Buffer.from(
+          `Content-Disposition: form-data; name="${part.name}"\r\n\r\n`,
+        );
         yield Buffer.from(part.value);
         yield Buffer.from("\r\n");
       }
@@ -119,7 +139,10 @@ describe("file routes", () => {
     const server = buildServer(baseConfig);
 
     const response = await server.inject({ method: "GET", url: "/api/files" });
-    const privateUrlResponse = await server.inject({ method: "GET", url: "/files/F-ABCDE" });
+    const privateUrlResponse = await server.inject({
+      method: "GET",
+      url: "/files/F-ABCDE",
+    });
 
     expect(response.statusCode).toBe(401);
     expect(privateUrlResponse.statusCode).toBe(200);
@@ -159,7 +182,7 @@ describe("file routes", () => {
         isDurable: false,
         sha256: createdRecord.sha256,
       });
-      expect(input.code).toMatch(/^F-/);
+      expect(input.code).toBeUndefined();
       return createdRecord;
     });
     const server = await buildTestServer({
@@ -167,7 +190,12 @@ describe("file routes", () => {
       repo: { createFileRecord },
     });
     const body = multipartBody([
-      { name: "file", filename: "hello.txt", contentType: "text/plain", value: "hello" },
+      {
+        name: "file",
+        filename: "hello.txt",
+        contentType: "text/plain",
+        value: "hello",
+      },
     ]);
 
     const response = await server.inject({
@@ -219,14 +247,24 @@ describe("file routes", () => {
       },
     ]);
 
-    const response = await server.inject({ method: "POST", url: "/api/files", ...body });
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/files",
+      ...body,
+    });
 
     expect(response.statusCode).toBe(201);
     expect(createFileRecord).toHaveBeenCalledWith(
-      expect.objectContaining({ originalName: "clip.mp4", mimeType: "video/mp4" }),
+      expect.objectContaining({
+        originalName: "clip.mp4",
+        mimeType: "video/mp4",
+      }),
       undefined,
     );
-    expect(response.json()).toMatchObject({ name: "clip.mp4", mime_type: "video/mp4" });
+    expect(response.json()).toMatchObject({
+      name: "clip.mp4",
+      mime_type: "video/mp4",
+    });
 
     await server.close();
   });
@@ -249,20 +287,35 @@ describe("file routes", () => {
       },
     });
     const body = multipartBody([
-      { name: "file", filename: "hello.txt", contentType: "text/plain", value: "hello" },
+      {
+        name: "file",
+        filename: "hello.txt",
+        contentType: "text/plain",
+        value: "hello",
+      },
     ]);
 
-    const response = await server.inject({ method: "POST", url: "/api/files", ...body });
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/files",
+      ...body,
+    });
 
     expect(response.statusCode).toBe(500);
-    expect(deleteStoredFile).toHaveBeenCalledWith(baseConfig.storageRoot, "F-ABCDE/F-ABCDE.txt");
+    expect(deleteStoredFile).toHaveBeenCalledWith(
+      baseConfig.storageRoot,
+      "F-ABCDE/F-ABCDE.txt",
+    );
 
     await server.close();
   });
 
   it("honors durable upload requests only when the principal can mark durable", async () => {
     const createFileRecord = vi.fn(async (input) =>
-      fileRecord({ isDurable: input.isDurable ?? false, expiresAt: input.expiresAt ?? null }),
+      fileRecord({
+        isDurable: input.isDurable ?? false,
+        expiresAt: input.expiresAt ?? null,
+      }),
     );
     const server = await buildTestServer({
       storage: {
@@ -276,10 +329,19 @@ describe("file routes", () => {
     });
     const body = multipartBody([
       { name: "durable", value: "true" },
-      { name: "file", filename: "hello.txt", contentType: "text/plain", value: "hello" },
+      {
+        name: "file",
+        filename: "hello.txt",
+        contentType: "text/plain",
+        value: "hello",
+      },
     ]);
 
-    const response = await server.inject({ method: "POST", url: "/api/files", ...body });
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/files",
+      ...body,
+    });
 
     expect(response.statusCode).toBe(201);
     expect(createFileRecord).toHaveBeenCalledWith(
@@ -293,7 +355,10 @@ describe("file routes", () => {
 
   it("honors durable upload requests when the durable field arrives after the file part", async () => {
     const createFileRecord = vi.fn(async (input) =>
-      fileRecord({ isDurable: input.isDurable ?? false, expiresAt: input.expiresAt ?? null }),
+      fileRecord({
+        isDurable: input.isDurable ?? false,
+        expiresAt: input.expiresAt ?? null,
+      }),
     );
     const server = await buildTestServer({
       storage: {
@@ -311,11 +376,20 @@ describe("file routes", () => {
       repo: { createFileRecord },
     });
     const body = delayedMultipartBody([
-      { name: "file", filename: "hello.txt", contentType: "text/plain", value: "hello" },
+      {
+        name: "file",
+        filename: "hello.txt",
+        contentType: "text/plain",
+        value: "hello",
+      },
       { name: "durable", value: "true" },
     ]);
 
-    const response = await server.inject({ method: "POST", url: "/api/files", ...body });
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/files",
+      ...body,
+    });
 
     expect(response.statusCode).toBe(201);
     expect(createFileRecord).toHaveBeenCalledWith(
@@ -347,13 +421,24 @@ describe("file routes", () => {
     }));
     const body = multipartBody([
       ...fields,
-      { name: "file", filename: "hello.txt", contentType: "text/plain", value: "hello" },
+      {
+        name: "file",
+        filename: "hello.txt",
+        contentType: "text/plain",
+        value: "hello",
+      },
     ]);
 
-    const response = await server.inject({ method: "POST", url: "/api/files", ...body });
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/files",
+      ...body,
+    });
 
     expect(response.statusCode).toBe(413);
-    expect(response.json()).toMatchObject({ error: "Multipart upload exceeds configured limits" });
+    expect(response.json()).toMatchObject({
+      error: "Multipart upload exceeds configured limits",
+    });
 
     await server.close();
   });
@@ -368,7 +453,10 @@ describe("file routes", () => {
     ]);
     const server = await buildTestServer({ repo: { listFiles } });
 
-    const response = await server.inject({ method: "GET", url: "/api/files?limit=10&offset=5" });
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/files?limit=10&offset=5",
+    });
 
     expect(response.statusCode).toBe(200);
     expect(listFiles).toHaveBeenCalledWith(
@@ -388,7 +476,10 @@ describe("file routes", () => {
       repo: { findFileByCode: vi.fn(async () => fileRecord()) },
     });
 
-    const response = await server.inject({ method: "GET", url: "/api/files/F-ABCDE" });
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/files/F-ABCDE",
+    });
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
@@ -411,7 +502,10 @@ describe("file routes", () => {
       },
     });
 
-    const response = await server.inject({ method: "GET", url: "/api/files/F-ABCDE" });
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/files/F-ABCDE",
+    });
 
     expect(response.statusCode).toBe(410);
     expect(response.json()).toMatchObject({ error: "File has expired" });
@@ -422,15 +516,20 @@ describe("file routes", () => {
   it("streams downloads with content headers", async () => {
     const server = await buildTestServer({
       repo: { findFileByCode: vi.fn(async () => fileRecord()) },
-      storage: { openDownloadStream: vi.fn(async () => Readable.from(["hello"])) },
+      storage: {
+        openDownloadStream: vi.fn(async () => Readable.from(["hello"])),
+      },
     });
 
-    const response = await server.inject({ method: "GET", url: "/api/files/F-ABCDE/download" });
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/files/F-ABCDE/download",
+    });
 
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toBe("text/plain");
     expect(response.headers["content-disposition"]).toBe(
-      'attachment; filename="hello.txt"; filename*=UTF-8\'\'hello.txt',
+      "attachment; filename=\"hello.txt\"; filename*=UTF-8''hello.txt",
     );
     expect(response.body).toBe("hello");
 
@@ -448,7 +547,10 @@ describe("file routes", () => {
       storage: { openDownloadStream },
     });
 
-    const response = await server.inject({ method: "GET", url: "/api/files/F-ABCDE/download" });
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/files/F-ABCDE/download",
+    });
 
     expect(response.statusCode).toBe(410);
     expect(openDownloadStream).not.toHaveBeenCalled();
@@ -461,21 +563,28 @@ describe("file routes", () => {
       repo: {
         findFileByCode: vi.fn(async () =>
           fileRecord({
-            originalName: "evil\"\r\nx-injected: yes-\u2603.txt",
+            originalName: 'evil"\r\nx-injected: yes-\u2603.txt',
             mimeType: "text/plain\r\nx-injected: yes",
           }),
         ),
       },
-      storage: { openDownloadStream: vi.fn(async () => Readable.from(["hello"])) },
+      storage: {
+        openDownloadStream: vi.fn(async () => Readable.from(["hello"])),
+      },
     });
 
-    const response = await server.inject({ method: "GET", url: "/api/files/F-ABCDE/download" });
+    const response = await server.inject({
+      method: "GET",
+      url: "/api/files/F-ABCDE/download",
+    });
 
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toBe("application/octet-stream");
     const disposition = String(response.headers["content-disposition"]);
     expect(disposition).toContain('filename="evil__x-injected_ yes-_.txt"');
-    expect(disposition).toContain("filename*=UTF-8''evil%22_x-injected%3A%20yes-%E2%98%83.txt");
+    expect(disposition).toContain(
+      "filename*=UTF-8''evil%22_x-injected%3A%20yes-%E2%98%83.txt",
+    );
     expect(disposition).not.toMatch(/[\r\n]/);
     expect(disposition).not.toContain("x-injected: yes");
     expect(response.body).toBe("hello");
@@ -487,8 +596,12 @@ describe("file routes", () => {
     const setFileDurable = vi.fn(async (_code, _durable, _expiresAt) =>
       fileRecord({ isDurable: false, expiresAt }),
     );
-    const findFileByCode = vi.fn(async () => fileRecord({ isDurable: true, expiresAt: null }));
-    const server = await buildTestServer({ repo: { findFileByCode, setFileDurable } });
+    const findFileByCode = vi.fn(async () =>
+      fileRecord({ isDurable: true, expiresAt: null }),
+    );
+    const server = await buildTestServer({
+      repo: { findFileByCode, setFileDurable },
+    });
 
     const response = await server.inject({
       method: "PATCH",
@@ -497,102 +610,78 @@ describe("file routes", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(findFileByCode).toHaveBeenCalledWith("F-ABCDE", undefined);
-    expect(setFileDurable).toHaveBeenCalledWith("F-ABCDE", false, expiresAt, undefined);
+    expect(findFileByCode).not.toHaveBeenCalled();
+    expect(setFileDurable).toHaveBeenCalledWith(
+      "F-ABCDE",
+      false,
+      undefined,
+      undefined,
+      expect.objectContaining({ retentionDays: 7 }),
+    );
     expect(response.json()).toMatchObject({ code: "F-ABCDE", durable: false });
 
     await server.close();
   });
 
-  it("returns 404 when patching a missing or deleted file", async () => {
-    const setFileDurable = vi.fn(async () => fileRecord({ isDurable: true, expiresAt: null }));
-    const server = await buildTestServer({
-      repo: {
-        findFileByCode: vi.fn(async () => null),
-        setFileDurable,
-      },
-    });
-
-    const response = await server.inject({
-      method: "PATCH",
-      url: "/api/files/F-MISS",
-      payload: { durable: true },
-    });
-
-    expect(response.statusCode).toBe(404);
-    expect(response.json()).toMatchObject({ error: "File not found" });
-    expect(setFileDurable).not.toHaveBeenCalled();
-
-    await server.close();
-  });
-
-  it("returns 410 when patching an expired non-durable file before cleanup runs", async () => {
-    const setFileDurable = vi.fn(async () => fileRecord({ isDurable: true, expiresAt: null }));
-    const server = await buildTestServer({
-      repo: {
-        findFileByCode: vi.fn(async () =>
-          fileRecord({ expiresAt: new Date("2026-06-07T17:59:59.000Z") }),
-        ),
-        setFileDurable,
-      },
-    });
-
-    const response = await server.inject({
-      method: "PATCH",
-      url: "/api/files/F-ABCDE",
-      payload: { durable: true },
-    });
-
-    expect(response.statusCode).toBe(410);
-    expect(response.json()).toMatchObject({ error: "File has expired" });
-    expect(setFileDurable).not.toHaveBeenCalled();
-
-    await server.close();
-  });
-
-  it("returns 410 when a non-durable file expires during a durable patch race", async () => {
-    const findFileByCode = vi
-      .fn()
-      .mockResolvedValueOnce(fileRecord({ expiresAt }))
-      .mockResolvedValueOnce(fileRecord({ expiresAt: new Date("2026-06-07T17:59:59.000Z") }));
+  it.each([
+    [404, "File not found"],
+    [410, "File has expired"],
+    [409, "File deletion in progress"],
+  ])("returns locked retention failure %s", async (status, message) => {
     const setFileDurable = vi.fn(async () => {
-      throw new Error("File not found: F-ABCDE");
+      throw new FilePolicyError(
+        status as number,
+        message as string,
+        status === 409 ? "FILE_DELETION_IN_PROGRESS" : undefined,
+      );
     });
-    const server = await buildTestServer({
-      repo: { findFileByCode, setFileDurable },
-    });
-
+    const server = await buildTestServer({ repo: { setFileDurable } });
     const response = await server.inject({
       method: "PATCH",
       url: "/api/files/F-ABCDE",
       payload: { durable: true },
     });
-
-    expect(response.statusCode).toBe(410);
-    expect(response.json()).toMatchObject({ error: "File has expired" });
-    expect(setFileDurable).toHaveBeenCalledWith("F-ABCDE", true, undefined);
-
+    expect(response.statusCode).toBe(status);
+    expect(response.json().error).toBe(message);
     await server.close();
   });
 
   it("deletes stored bytes and marks file metadata deleted", async () => {
     const deleteStoredFile = vi.fn(async () => {});
-    const markFileDeleted = vi.fn(async () => fileRecord({ deletedAt: now }));
+    const finalizeFileDeletion = vi.fn(async () =>
+      fileRecord({ deletedAt: now }),
+    );
     const server = await buildTestServer({
       repo: {
-        findFileByCode: vi.fn(async () => fileRecord()),
-        markFileDeleted,
+        claimFileDeletion: vi.fn(async () =>
+          fileRecord({
+            lifecycleState: "deleting",
+            deletionClaimId: "synthetic-claim",
+          }),
+        ),
+        finalizeFileDeletion,
       },
       storage: { deleteStoredFile },
     });
 
-    const response = await server.inject({ method: "DELETE", url: "/api/files/F-ABCDE" });
+    const response = await server.inject({
+      method: "DELETE",
+      url: "/api/files/F-ABCDE",
+    });
 
     expect(response.statusCode).toBe(200);
-    expect(deleteStoredFile).toHaveBeenCalledWith(baseConfig.storageRoot, "F-ABCDE/F-ABCDE.txt");
-    expect(markFileDeleted).toHaveBeenCalledWith("F-ABCDE", undefined);
+    expect(deleteStoredFile).toHaveBeenCalledWith(
+      baseConfig.storageRoot,
+      "F-ABCDE/F-ABCDE.txt",
+    );
+    expect(finalizeFileDeletion).toHaveBeenCalledWith(
+      "F-ABCDE",
+      "synthetic-claim",
+      undefined,
+    );
     expect(deleteStoredFile.mock.invocationCallOrder[0]).toBeLessThan(
-      markFileDeleted.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+      finalizeFileDeletion.mock.invocationCallOrder[0] ??
+        Number.MAX_SAFE_INTEGER,
     );
     expect(response.json()).toMatchObject({ deleted: true, code: "F-ABCDE" });
 
@@ -601,46 +690,74 @@ describe("file routes", () => {
 
   it("returns a clear failure when metadata cannot be marked after byte deletion", async () => {
     const deleteStoredFile = vi.fn(async () => {});
-    const markFileDeleted = vi.fn(async () => {
+    const finalizeFileDeletion = vi.fn(async () => {
       throw new Error("update failed");
     });
     const server = await buildTestServer({
       repo: {
-        findFileByCode: vi.fn(async () => fileRecord()),
-        markFileDeleted,
+        claimFileDeletion: vi.fn(async () =>
+          fileRecord({
+            lifecycleState: "deleting",
+            deletionClaimId: "synthetic-claim",
+          }),
+        ),
+        finalizeFileDeletion,
       },
       storage: { deleteStoredFile },
     });
 
-    const response = await server.inject({ method: "DELETE", url: "/api/files/F-ABCDE" });
+    const response = await server.inject({
+      method: "DELETE",
+      url: "/api/files/F-ABCDE",
+    });
 
     expect(response.statusCode).toBe(500);
-    expect(deleteStoredFile).toHaveBeenCalledWith(baseConfig.storageRoot, "F-ABCDE/F-ABCDE.txt");
-    expect(markFileDeleted).toHaveBeenCalledWith("F-ABCDE", undefined);
+    expect(deleteStoredFile).toHaveBeenCalledWith(
+      baseConfig.storageRoot,
+      "F-ABCDE/F-ABCDE.txt",
+    );
+    expect(finalizeFileDeletion).toHaveBeenCalledWith(
+      "F-ABCDE",
+      "synthetic-claim",
+      undefined,
+    );
 
     await server.close();
   });
 
-  it("does not hide metadata when stored bytes cannot be deleted", async () => {
+  it("retains a committed claim when stored bytes cannot be deleted", async () => {
     const deleteStoredFile = vi.fn(async () => {
       throw new Error("unlink failed");
     });
-    const markFileDeleted = vi.fn(async () => fileRecord({ deletedAt: now }));
+    const finalizeFileDeletion = vi.fn(async () =>
+      fileRecord({ deletedAt: now }),
+    );
     const server = await buildTestServer({
       repo: {
-        findFileByCode: vi.fn(async () => fileRecord()),
-        markFileDeleted,
+        claimFileDeletion: vi.fn(async () =>
+          fileRecord({
+            lifecycleState: "deleting",
+            deletionClaimId: "synthetic-claim",
+          }),
+        ),
+        finalizeFileDeletion,
       },
       storage: { deleteStoredFile },
     });
 
-    const response = await server.inject({ method: "DELETE", url: "/api/files/F-ABCDE" });
+    const response = await server.inject({
+      method: "DELETE",
+      url: "/api/files/F-ABCDE",
+    });
 
     expect(response.statusCode).toBe(500);
-    expect(deleteStoredFile).toHaveBeenCalledWith(baseConfig.storageRoot, "F-ABCDE/F-ABCDE.txt");
-    expect(markFileDeleted).not.toHaveBeenCalled();
+    expect(deleteStoredFile).toHaveBeenCalledWith(
+      baseConfig.storageRoot,
+      "F-ABCDE/F-ABCDE.txt",
+    );
+    expect(finalizeFileDeletion).not.toHaveBeenCalled();
     expect(response.json()).toMatchObject({
-      error: "Stored bytes could not be removed; file was not deleted",
+      error: "File deletion could not be completed",
     });
 
     await server.close();
@@ -651,13 +768,104 @@ describe("file routes", () => {
       resolvePrincipal: async () => ({ ...apiKeyPrincipal, can_upload: false }),
     });
     const body = multipartBody([
-      { name: "file", filename: "hello.txt", contentType: "text/plain", value: "hello" },
+      {
+        name: "file",
+        filename: "hello.txt",
+        contentType: "text/plain",
+        value: "hello",
+      },
     ]);
 
-    const response = await server.inject({ method: "POST", url: "/api/files", ...body });
+    const response = await server.inject({
+      method: "POST",
+      url: "/api/files",
+      ...body,
+    });
 
     expect(response.statusCode).toBe(403);
 
     await server.close();
+  });
+});
+
+describe("multipart input validation", () => {
+  it.each([
+    [{ name: "durable", value: "maybe" }],
+    [{ name: "unknown", value: "ignored formerly" }],
+    [
+      { name: "durable", value: "true" },
+      { name: "durable", value: "false" },
+    ],
+  ])(
+    "rejects invalid mutation fields after the file part %#",
+    async (...parts) => {
+      const saved = {
+        storageKey: "synthetic/bytes",
+        sizeBytes: 5,
+        sha256: "a".repeat(64),
+      };
+      const createFileRecord = vi.fn();
+      const deleteStoredFile = vi.fn(async () => {});
+      const server = await buildTestServer({
+        repo: { createFileRecord },
+        storage: {
+          saveUploadStream: async (input) => {
+            for await (const _chunk of input.stream) {
+            }
+            return saved;
+          },
+          deleteStoredFile,
+        },
+      });
+      try {
+        const body = multipartBody([
+          {
+            name: "file",
+            filename: "hello.txt",
+            contentType: "text/plain",
+            value: "hello",
+          },
+          ...parts.flat(),
+        ]);
+        const response = await server.inject({
+          method: "POST",
+          url: "/api/files",
+          ...body,
+        });
+        expect(response.statusCode).toBe(400);
+        expect(createFileRecord).not.toHaveBeenCalled();
+        expect(deleteStoredFile).toHaveBeenCalledOnce();
+      } finally {
+        await server.close();
+      }
+    },
+  );
+  it("rejects an overlong filename before writing bytes", async () => {
+    const saveUploadStream = vi.fn();
+    const createFileRecord = vi.fn();
+    const server = await buildTestServer({
+      repo: { createFileRecord },
+      storage: { saveUploadStream },
+    });
+    try {
+      const body = multipartBody([
+        {
+          name: "file",
+          filename: "x".repeat(1025),
+          contentType: "text/plain",
+          value: "hello",
+        },
+      ]);
+      const response = await server.inject({
+        method: "POST",
+        url: "/api/files",
+        ...body,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(saveUploadStream).not.toHaveBeenCalled();
+      expect(createFileRecord).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
   });
 });

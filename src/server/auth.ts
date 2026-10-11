@@ -70,7 +70,10 @@ export async function hashApiKey(secret: string): Promise<string> {
   return argon2.hash(secret, { type: argon2.argon2id });
 }
 
-export async function verifyApiKeySecret(hash: string, secret: string): Promise<boolean> {
+export async function verifyApiKeySecret(
+  hash: string,
+  secret: string,
+): Promise<boolean> {
   try {
     return await argon2.verify(hash, secret);
   } catch {
@@ -79,7 +82,10 @@ export async function verifyApiKeySecret(hash: string, secret: string): Promise<
 }
 
 export function hasPermission(
-  principal: Partial<Record<Permission, unknown>> & { type?: unknown; isAdmin?: unknown },
+  principal: Partial<Record<Permission, unknown>> & {
+    type?: unknown;
+    isAdmin?: unknown;
+  },
   permission: Permission,
 ): boolean {
   if (principal.isAdmin === true) {
@@ -118,6 +124,8 @@ export async function resolvePrincipal(
   options: { config: AppConfig; db?: Queryable },
 ): Promise<Principal | null> {
   const client = options.db ?? db;
+  if (request.headers.authorization !== undefined)
+    return resolveApiKeyPrincipal(request, client);
   const admin = await resolveAdminPrincipal(request, options.config, client);
   if (admin) {
     return admin;
@@ -137,13 +145,15 @@ export async function resolveAdminPrincipal(
   }
 
   const sessionHash = hashSessionToken(token);
+  // Resolution may run after a transaction's file-lock wait; now() would
+  // reuse the transaction start and accept a session that has since expired.
   const result = await client.query<AdminSessionRow>(
     `
       UPDATE admin_sessions
       SET last_seen_at = now()
       WHERE session_hash = $1
         AND revoked_at IS NULL
-        AND expires_at > now()
+        AND expires_at > clock_timestamp()
       RETURNING id
     `,
     [sessionHash],
@@ -214,7 +224,10 @@ export async function resolveApiKeyPrincipal(
   };
 }
 
-export function principalHasPermission(principal: Principal, permission: Permission): boolean {
+export function principalHasPermission(
+  principal: Principal,
+  permission: Permission,
+): boolean {
   return hasPermission(principal, permission);
 }
 

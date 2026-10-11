@@ -7,7 +7,7 @@ import { validatedDatabaseUrl } from "./config.js";
 
 const modulePath = fileURLToPath(import.meta.url);
 const migrationsPath = join(dirname(modulePath), "migrations");
-export const EXPECTED_SCHEMA_VERSION = 2;
+export const EXPECTED_SCHEMA_VERSION = 3;
 export const MIGRATION_LOCK_ID = 742131109;
 export interface Migration { version: number; checksum: string; sql: string }
 export interface MigrationRow { version: number; checksum: string }

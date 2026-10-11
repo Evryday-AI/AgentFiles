@@ -1,5 +1,10 @@
 import type { Queryable } from "./db.js";
-import { listFiles, markFileDeleted } from "./filesRepo.js";
+import {
+  listDeletionCandidates,
+  claimFileDeletion,
+  finalizeFileDeletion,
+  type FileRecord,
+} from "./filesRepo.js";
 import { deleteStoredFile as defaultDeleteStoredFile } from "./storage.js";
 
 export interface ExpiredFileRecord {
@@ -13,9 +18,11 @@ export interface ExpiredFileRecord {
 export interface CleanupExpiredFilesOptions {
   storageRoot: string;
   db?: Queryable;
+  batchSize?: number;
   repo?: {
     findExpiredFiles?: (now: Date) => Promise<ExpiredFileRecord[]>;
-    markFileDeleted?: (code: string) => Promise<unknown>;
+    claimFileDeletion?: (code: string) => Promise<FileRecord | null>;
+    finalizeFileDeletion?: (code: string, claimId: string) => Promise<unknown>;
   };
   deleteStoredFile?: (storageRoot: string, storageKey: string) => Promise<void>;
   now?: Date;
@@ -47,8 +54,17 @@ export async function cleanupExpiredFiles(
   options: CleanupExpiredFilesOptions,
 ): Promise<CleanupExpiredFilesResult> {
   const repo = {
-    findExpiredFiles: (now: Date) => listFiles({ expiresBefore: now, isDurable: false }, options.db),
-    markFileDeleted: (code: string) => markFileDeleted(code, options.db),
+    findExpiredFiles: (now: Date) =>
+      listDeletionCandidates(now, options.batchSize, options.db),
+    claimFileDeletion: (code: string) =>
+      claimFileDeletion(
+        code,
+        "expired",
+        options.db,
+        () => options.now ?? new Date(),
+      ),
+    finalizeFileDeletion: (code: string, claimId: string) =>
+      finalizeFileDeletion(code, claimId, options.db),
     ...options.repo,
   };
   const deleteStoredFile = options.deleteStoredFile ?? defaultDeleteStoredFile;
@@ -58,20 +74,26 @@ export async function cleanupExpiredFiles(
   const failures: CleanupExpiredFilesFailure[] = [];
 
   for (const file of files) {
-    if (isDurable(file)) {
-      continue;
-    }
-
-    const key = storageKey(file);
+    let key = storageKey(file);
     try {
+      const claimed = await repo.claimFileDeletion(file.code);
+      if (!claimed) continue;
+      if (!claimed.deletionClaimId) throw new Error("Deletion claim missing");
+      key = claimed.storageKey;
       await deleteStoredFile(options.storageRoot, key);
-      await repo.markFileDeleted(file.code);
+      if (claimed.thumbnailKey)
+        await deleteStoredFile(options.storageRoot, claimed.thumbnailKey);
+      const finalized = await repo.finalizeFileDeletion(
+        file.code,
+        claimed.deletionClaimId,
+      );
+      if (!finalized) throw new Error("Deletion finalization failed");
       deleted += 1;
-    } catch (error) {
+    } catch {
       failures.push({
         code: file.code,
         storageKey: key,
-        error: errorMessage(error),
+        error: "File deletion failed; claim retained for recovery",
       });
     }
   }
@@ -112,14 +134,6 @@ export function startCleanupExpiredFilesJob(
   };
 }
 
-function isDurable(file: ExpiredFileRecord): boolean {
-  return file.isDurable === true || file.is_durable === true;
-}
-
 function storageKey(file: ExpiredFileRecord): string {
   return file.storageKey ?? file.storage_key ?? "";
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

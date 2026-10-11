@@ -54,7 +54,7 @@ describe("admin auth routes", () => {
     expect(login.cookies[0]).toMatchObject({ httpOnly: true, sameSite: "Lax" });
     expect(login.cookies[0]?.secure ?? false).toBe(secure);
     expect(server.unsignCookie(login.cookies[0]!.value).valid).toBe(true);
-    const logout = await server.inject({ method: "POST", url: "/api/auth/logout" });
+    const logout = await server.inject({ method: "POST", url: "/api/auth/logout", headers: { origin: config.publicBaseUrl } });
     expect(logout.cookies[0]?.secure ?? false).toBe(secure);
     await server.close();
   });
@@ -158,7 +158,7 @@ describe("admin auth routes", () => {
     const response = await server.inject({
       method: "POST",
       url: "/api/auth/logout",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin: baseConfig.publicBaseUrl },
     });
 
     expect(response.statusCode).toBe(200);
@@ -232,6 +232,7 @@ describe("admin auth routes", () => {
       method: "POST",
       url: "/api/admin/api-keys",
       cookies: { agentfiles_admin: cookie },
+      headers: { origin: baseConfig.publicBaseUrl },
       payload: { name: "Desktop helper", can_share: true },
     });
     const body = response.json();
@@ -283,6 +284,7 @@ describe("admin auth routes", () => {
       method: "GET",
       url: "/api/admin/storage-usage",
       cookies: { agentfiles_admin: cookie },
+      headers: { origin: baseConfig.publicBaseUrl },
     });
 
     expect(response.statusCode).toBe(200);
@@ -301,7 +303,7 @@ describe("admin auth routes", () => {
     });
 
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: "Admin authentication is required" });
+    expect(response.json()).toMatchObject({ error: "Admin authentication is required" });
 
     await server.close();
   });

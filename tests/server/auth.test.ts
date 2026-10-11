@@ -146,6 +146,7 @@ describe("API key auth", () => {
     expect(principal).toBeNull();
     expect(db.calls[0]?.text).toContain("UPDATE admin_sessions");
     expect(db.calls[0]?.text).toContain("revoked_at IS NULL");
+    expect(db.calls[0]?.text).toContain("expires_at > clock_timestamp()");
     expect(db.calls[0]?.text).toContain("RETURNING");
   });
 

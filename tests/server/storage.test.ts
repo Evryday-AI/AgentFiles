@@ -41,27 +41,16 @@ describe("saveUploadStream", () => {
       stream: Readable.from(["image"]),
     });
 
-    expect(result.storageKey).toBe("F-SAFE1/F-SAFE1.png");
+    expect(result.storageKey).toMatch(/^[a-f0-9]{32}\/[a-f0-9]{32}\.png$/);
   });
 
-  it("does not overwrite an existing final storage key", async () => {
+  it("uses opaque paths so a repeated code cannot select earlier bytes", async () => {
     root = await mkdtemp(join(tmpdir(), "agentfiles-"));
-    const first = await saveUploadStream({
-      storageRoot: root,
-      code: "F-DUPES",
-      originalName: "dupe.txt",
-      stream: Readable.from(["first"]),
-    });
-
-    await expect(
-      saveUploadStream({
-        storageRoot: root,
-        code: "F-DUPES",
-        originalName: "dupe.txt",
-        stream: Readable.from(["second"]),
-      }),
-    ).rejects.toMatchObject({ code: "EEXIST" });
+    const first = await saveUploadStream({ storageRoot: root, code: "F-ABCDE", originalName: "dupe.txt", stream: Readable.from(["first"]) });
+    const second = await saveUploadStream({ storageRoot: root, code: "F-ABCDE", originalName: "dupe.txt", stream: Readable.from(["second"]) });
+    expect(first.storageKey).not.toBe(second.storageKey);
     await expect(readFile(join(root, first.storageKey), "utf8")).resolves.toBe("first");
+    await expect(readFile(join(root, second.storageKey), "utf8")).resolves.toBe("second");
   });
 });
 

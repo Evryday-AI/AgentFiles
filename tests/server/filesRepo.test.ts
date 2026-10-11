@@ -1,297 +1,219 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-vi.mock("../../src/server/fileCodes", () => ({
-  createFileCode: vi.fn(() => "F-MOCK1"),
-}));
-
-import { createFileCode } from "../../src/server/fileCodes";
+import { describe, expect, it, vi } from "vitest";
 import {
   createFileRecord,
   findFileByCode,
   listFiles,
-  markFileDeleted,
+  claimFileDeletion,
+  finalizeFileDeletion,
   setFileDurable,
-  type Queryable,
 } from "../../src/server/filesRepo";
-
-const createFileCodeMock = vi.mocked(createFileCode);
-
-const createdAt = new Date("2026-06-07T18:00:00.000Z");
-const updatedAt = new Date("2026-06-07T18:01:00.000Z");
-const expiresAt = new Date("2026-06-14T18:00:00.000Z");
-
-const fileRow = {
-  id: "018f35c2-0000-7000-9000-000000000001",
-  code: "F-TEST1",
+import type { Queryable } from "../../src/server/db";
+vi.mock("../../src/server/fileCodes", () => ({
+  createFileCode: vi.fn(() => "F-ABCDE"),
+  FILE_CODE_NAMESPACE_SIZE: 32 ** 5,
+  FILE_CODE_ALLOCATION_ATTEMPTS: 32,
+}));
+import { createFileCode } from "../../src/server/fileCodes";
+const at = new Date("2026-06-07T18:00:00Z"),
+  expiry = new Date("2026-06-14T18:00:00Z");
+const row = {
+  id: "synthetic",
+  code: "F-ABCDE",
   original_name: "notes.txt",
-  storage_key: "2026/06/notes.txt",
+  storage_key: "synthetic/bytes",
   mime_type: "text/plain",
   size_bytes: "42",
   uploaded_by_type: "api_key",
-  uploaded_by_name: "Codex Desktop",
-  created_at: createdAt,
-  updated_at: updatedAt,
-  expires_at: expiresAt,
+  uploaded_by_name: "synthetic",
+  created_at: at,
+  updated_at: at,
+  expires_at: expiry,
   is_durable: false,
   deleted_at: null,
   deleted_reason: null,
-  sha256: "abc123",
+  lifecycle_state: "active",
+  deletion_claim_id: null,
+  deletion_claimed_at: null,
+  deletion_claim_reason: null,
+  sha256: null,
   thumbnail_key: null,
-  metadata: { source: "test" },
+  metadata: {},
 };
-
-class FakeQueryable implements Queryable {
+const input = {
+  originalName: "notes.txt",
+  storageKey: "synthetic/bytes",
+  mimeType: "text/plain",
+  sizeBytes: 42,
+  uploadedByType: "api_key" as const,
+  expiresAt: expiry,
+};
+class FakeDatabase implements Queryable {
   calls: Array<{ text: string; params: readonly unknown[] }> = [];
-
-  constructor(private readonly responses: Array<unknown[] | Error>) {}
-
+  constructor(private responses: Array<unknown[] | Error>) {}
+  async withClient<T>(work: (pinned: Queryable) => Promise<T>) {
+    return work(this);
+  }
   async query<T>(text: string, params: readonly unknown[] = []) {
     this.calls.push({ text: text.replace(/\s+/g, " ").trim(), params });
+    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(text))
+      return { rows: [], rowCount: 0 };
     const response = this.responses.shift() ?? [];
-    if (response instanceof Error) {
-      throw response;
-    }
-    const rows = response as T[];
-    return { rows, rowCount: rows.length };
+    if (response instanceof Error) throw response;
+    return { rows: response as T[], rowCount: response.length };
   }
 }
-
-describe("filesRepo", () => {
-  beforeEach(() => {
-    createFileCodeMock.mockReset();
-    createFileCodeMock.mockReturnValue("F-MOCK1");
+describe("files repository lifecycle protocol", () => {
+  it("atomically reserves the code and inserts metadata in one SQL statement", async () => {
+    const db = new FakeDatabase([[row]]);
+    const record = await createFileRecord({ ...input, code: "F-ABCDE" }, db);
+    expect(db.calls).toHaveLength(1);
+    expect(db.calls[0].text).toContain("INSERT INTO issued_file_codes");
+    expect(db.calls[0].text).toContain("FROM reserved");
+    expect(record.lifecycleState).toBe("active");
+    expect(record.sizeBytes).toBe(42);
   });
-
-  it("creates file records with deterministic SQL parameters", async () => {
-    const client = new FakeQueryable([[fileRow]]);
-
-    const record = await createFileRecord(
-      {
-        code: "F-TEST1",
-        originalName: "notes.txt",
-        storageKey: "2026/06/notes.txt",
-        mimeType: "text/plain",
-        sizeBytes: 42,
-        uploadedByType: "api_key",
-        uploadedByName: "Codex Desktop",
-        expiresAt,
-        isDurable: false,
-        sha256: "abc123",
-        metadata: { source: "test" },
-      },
-      client,
+  it("retries a reserved generated code without replaying bytes", async () => {
+    const db = new FakeDatabase([[], [{ ...row, code: "F-NEW22" }]]);
+    vi.mocked(createFileCode)
+      .mockReturnValueOnce("F-ABCDE")
+      .mockReturnValueOnce("F-NEW22");
+    expect((await createFileRecord(input, db)).code).toBe("F-NEW22");
+    expect(db.calls).toHaveLength(2);
+  });
+  it("bounds retries at32 and distinguishes namespace exhaustion", async () => {
+    vi.mocked(createFileCode).mockReturnValue("F-ABCDE");
+    for (const count of [1, 32 ** 5]) {
+      const db = new FakeDatabase([
+        ...Array.from({ length: 32 }, () => []),
+        [{ count: String(count) }],
+      ]);
+      await expect(createFileRecord(input, db)).rejects.toMatchObject({
+        statusCode: count === 1 ? 503 : 507,
+        code:
+          count === 1
+            ? "CODE_ALLOCATION_RETRY_EXHAUSTED"
+            : "CODE_SPACE_EXHAUSTED",
+      });
+      expect(db.calls).toHaveLength(33);
+    }
+  });
+  it("does not reassign caller-provided reserved or invalid code", async () => {
+    const db = new FakeDatabase([[]]);
+    await expect(
+      createFileRecord({ ...input, code: "F-ABCDE" }, db),
+    ).rejects.toMatchObject({ code: "CODE_ALLOCATION_RETRY_EXHAUSTED" });
+    await expect(
+      createFileRecord({ ...input, code: "F-OLD01" }, db),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    expect(db.calls).toHaveLength(1);
+  });
+  it("propagates non-collision database failure without issuing another code", async () => {
+    const error = new Error("synthetic DB unavailable");
+    const db = new FakeDatabase([error]);
+    await expect(createFileRecord(input, db)).rejects.toBe(error);
+    expect(db.calls).toHaveLength(1);
+  });
+  it("returns missing metadata as null", async () => {
+    expect(await findFileByCode("F-ABCDE", new FakeDatabase([[]]))).toBeNull();
+  });
+  it("uses exactly the fail-closed SQL availability predicate", async () => {
+    const db = new FakeDatabase([[row]]);
+    await listFiles({ availableAt: at }, db);
+    expect(db.calls[0].text).toContain(
+      "lifecycle_state = 'active' AND deleted_at IS NULL AND (is_durable OR expires_at > $1)",
     );
-
-    expect(client.calls[0]?.text).toContain("INSERT INTO files");
-    expect(client.calls[0]?.params).toEqual([
-      "F-TEST1",
-      "notes.txt",
-      "2026/06/notes.txt",
-      "text/plain",
-      42,
-      "api_key",
-      "Codex Desktop",
-      expiresAt,
-      false,
-      "abc123",
-      null,
-      { source: "test" },
+    expect(db.calls[0].text).not.toContain("expires_at IS NULL OR");
+    expect(db.calls[0].params).toEqual([at, 100, 0]);
+  });
+  it("locks, rechecks authority with post-lock time, updates and commits retention", async () => {
+    const db = new FakeDatabase([
+      [row],
+      [{ ...row, is_durable: true, expires_at: null }],
     ]);
-    expect(record).toMatchObject({
-      code: "F-TEST1",
-      originalName: "notes.txt",
-      storageKey: "2026/06/notes.txt",
-      sizeBytes: 42,
-      uploadedByType: "api_key",
-      uploadedByName: "Codex Desktop",
-      expiresAt,
-      isDurable: false,
-      deletedReason: null,
-      metadata: { source: "test" },
+    const authorize = vi.fn(() => {
+      expect(db.calls.at(-1)?.text).toContain("FOR UPDATE");
     });
+    const r = await setFileDurable("F-ABCDE", true, db, undefined, {
+      now: () => at,
+      authorize,
+    });
+    expect(r.isDurable).toBe(true);
+    expect(authorize).toHaveBeenCalledOnce();
+    expect(db.calls.map((c) => c.text.split(" ")[0])).toEqual([
+      "BEGIN",
+      "SELECT",
+      "UPDATE",
+      "COMMIT",
+    ]);
+    expect(db.calls[2].params).toEqual(["F-ABCDE", true, null, at]);
   });
-
-  it("retries generated file code collisions", async () => {
-    const duplicateCodeError = Object.assign(
-      new Error("duplicate key value violates unique constraint \"files_code_key\""),
-      { code: "23505", constraint: "files_code_key" },
-    );
-    const client = new FakeQueryable([duplicateCodeError, [{ ...fileRow, code: "F-NEW22" }]]);
-    createFileCodeMock.mockReturnValueOnce("F-DUP01").mockReturnValueOnce("F-NEW22");
-
-    const record = await createFileRecord(
-      {
-        originalName: "notes.txt",
-        storageKey: "2026/06/notes.txt",
-        mimeType: "text/plain",
-        sizeBytes: 42,
-        uploadedByType: "api_key",
-      },
-      client,
-    );
-
-    expect(record.code).toBe("F-NEW22");
-    expect(createFileCodeMock).toHaveBeenCalledTimes(2);
-    expect(client.calls).toHaveLength(2);
-    expect(client.calls[0]?.params[0]).toBe("F-DUP01");
-    expect(client.calls[1]?.params[0]).toBe("F-NEW22");
+  it("restoring expiry starts the configured interval after acquiring lock", async () => {
+    const db = new FakeDatabase([
+      [{ ...row, is_durable: true, expires_at: null }],
+      [row],
+    ]);
+    await setFileDurable("F-ABCDE", false, undefined, db, {
+      now: () => at,
+      retentionDays: 7,
+    });
+    expect(db.calls[2].params).toEqual(["F-ABCDE", false, expiry, at]);
   });
-
-  it("does not retry caller-supplied duplicate file codes", async () => {
-    const duplicateCodeError = Object.assign(
-      new Error("duplicate key value violates unique constraint \"files_code_key\""),
-      { code: "23505", constraint: "files_code_key" },
-    );
-    const client = new FakeQueryable([duplicateCodeError]);
-
+  it.each([
+    [null, 404],
+    [{ ...row, expires_at: at }, 410],
+    [{ ...row, expires_at: null }, 410],
+    [{ ...row, lifecycle_state: "deleting" }, 409],
+    [{ ...row, lifecycle_state: "deleted", deleted_at: at }, 404],
+  ])("rejects locked unavailable retention %#", async (file, status) => {
+    const db = new FakeDatabase([file ? [file] : []]);
     await expect(
-      createFileRecord(
-        {
-          code: "F-TEST1",
-          originalName: "notes.txt",
-          storageKey: "2026/06/notes.txt",
-          mimeType: "text/plain",
-          sizeBytes: 42,
-          uploadedByType: "api_key",
-        },
-        client,
-      ),
-    ).rejects.toBe(duplicateCodeError);
-
-    expect(createFileCodeMock).not.toHaveBeenCalled();
-    expect(client.calls).toHaveLength(1);
+      setFileDurable("F-ABCDE", true, db, undefined, { now: () => at }),
+    ).rejects.toMatchObject({ statusCode: status });
+    expect(db.calls.at(-1)?.text).toBe("ROLLBACK");
+    expect(db.calls.some((c) => c.text.startsWith("UPDATE"))).toBe(false);
   });
-
-  it("finds active files by code", async () => {
-    const client = new FakeQueryable([[fileRow]]);
-
-    const record = await findFileByCode("F-TEST1", client);
-
-    expect(client.calls[0]?.text).toContain("WHERE code = $1 AND deleted_at IS NULL");
-    expect(client.calls[0]?.params).toEqual(["F-TEST1"]);
-    expect(record?.id).toBe(fileRow.id);
-  });
-
-  it("returns null when a file is not found", async () => {
-    const client = new FakeQueryable([[]]);
-
-    await expect(findFileByCode("F-MISS1", client)).resolves.toBeNull();
-  });
-
-  it("lists active files with filters", async () => {
-    const client = new FakeQueryable([[fileRow]]);
-    const expiresBefore = new Date("2026-06-15T00:00:00.000Z");
-    const availableAt = new Date("2026-06-07T18:00:00.000Z");
-
-    const records = await listFiles(
-      {
-        isDurable: false,
-        uploadedByType: "api_key",
-        expiresBefore,
-        availableAt,
-        limit: 25,
-        offset: 50,
-      },
-      client,
-    );
-
-    expect(client.calls[0]?.text).toContain("WHERE deleted_at IS NULL");
-    expect(client.calls[0]?.text).toContain("is_durable = $1");
-    expect(client.calls[0]?.text).toContain("uploaded_by_type = $2");
-    expect(client.calls[0]?.text).toContain("expires_at IS NOT NULL AND expires_at <= $3");
-    expect(client.calls[0]?.text).toContain(
-      "(is_durable = true OR expires_at IS NULL OR expires_at > $4)",
-    );
-    expect(client.calls[0]?.text).toContain("ORDER BY created_at DESC, id DESC LIMIT $5 OFFSET $6");
-    expect(client.calls[0]?.params).toEqual([false, "api_key", expiresBefore, availableAt, 25, 50]);
-    expect(records).toHaveLength(1);
-  });
-
-  it("clamps non-finite and fractional pagination values", async () => {
-    const client = new FakeQueryable([[fileRow]]);
-
-    await listFiles({ limit: Number.POSITIVE_INFINITY, offset: Number.NaN }, client);
-
-    expect(client.calls[0]?.params).toEqual([1, 0]);
-
-    await listFiles({ limit: 25.9, offset: 50.9 }, client);
-
-    expect(client.calls[1]?.params).toEqual([25, 50]);
-  });
-
-  it("can list deleted files when requested", async () => {
-    const client = new FakeQueryable([[{ ...fileRow, deleted_at: updatedAt }]]);
-
-    await listFiles({ includeDeleted: true }, client);
-
-    expect(client.calls[0]?.text).not.toContain("deleted_at IS NULL");
-  });
-
-  it("marks only active files deleted by code", async () => {
-    const deletedRow = { ...fileRow, deleted_at: updatedAt, deleted_reason: "admin_delete" };
-    const client = new FakeQueryable([[deletedRow]]);
-
-    const record = await markFileDeleted("F-TEST1", client);
-
-    expect(client.calls[0]?.text).toContain("UPDATE files SET deleted_at = now(), updated_at = now()");
-    expect(client.calls[0]?.text).toContain("WHERE code = $1 AND deleted_at IS NULL");
-    expect(client.calls[0]?.text).toContain("RETURNING");
-    expect(client.calls[0]?.params).toEqual(["F-TEST1"]);
-    expect(record?.deletedAt).toEqual(updatedAt);
-    expect(record?.deletedReason).toBe("admin_delete");
-  });
-
-  it("returns null when deleting a missing or already-deleted file", async () => {
-    const client = new FakeQueryable([[]]);
-
-    await expect(markFileDeleted("F-MISS1", client)).resolves.toBeNull();
-  });
-
-  it("updates durable state and returns the file", async () => {
-    const durableRow = { ...fileRow, is_durable: true, expires_at: null };
-    const client = new FakeQueryable([[durableRow]]);
-
-    const record = await setFileDurable("F-TEST1", true, client);
-
-    expect(client.calls[0]?.text).toContain("UPDATE files");
-    expect(client.calls[0]?.text).toContain("SET is_durable = $2");
-    expect(client.calls[0]?.text).toContain("expires_at = $3");
-    expect(client.calls[0]?.text).toContain("WHERE code = $1 AND deleted_at IS NULL");
-    expect(client.calls[0]?.text).toContain(
-      "(is_durable = true OR expires_at IS NULL OR expires_at > now())",
-    );
-    expect(client.calls[0]?.params).toEqual(["F-TEST1", true, null]);
-    expect(record.isDurable).toBe(true);
-    expect(record.expiresAt).toBeNull();
-  });
-
-  it("requires and sets a new expiry when removing durable state", async () => {
-    const expiringRow = { ...fileRow, is_durable: false, expires_at: expiresAt };
-    const client = new FakeQueryable([[expiringRow]]);
-
-    const record = await setFileDurable("F-TEST1", false, expiresAt, client);
-
-    expect(client.calls[0]?.text).toContain("SET is_durable = $2");
-    expect(client.calls[0]?.text).toContain("expires_at = $3");
-    expect(client.calls[0]?.params).toEqual(["F-TEST1", false, expiresAt]);
-    expect(record.isDurable).toBe(false);
-    expect(record.expiresAt).toEqual(expiresAt);
-  });
-
-  it("rejects durable removal without a replacement expiry", async () => {
-    const client = new FakeQueryable([]);
-
+  it("requires a pinned client for mutations", async () => {
     await expect(
-      setFileDurable("F-TEST1", false, undefined as unknown as Date, client),
-    ).rejects.toThrow(
-      "A new expiry is required when removing durable state.",
-    );
-    expect(client.calls).toHaveLength(0);
+      setFileDurable("F-ABCDE", true, {
+        query: async () => ({ rows: [], rowCount: 0 }),
+      }),
+    ).rejects.toThrow("Pinned database transaction required");
   });
-
-  it("throws when durable state is updated for a missing file", async () => {
-    const client = new FakeQueryable([[]]);
-
-    await expect(setFileDurable("F-MISS1", true, client)).rejects.toThrow("File not found: F-MISS1");
+  it("rechecks cleanup expiry under lock and skips a keep that won", async () => {
+    const db = new FakeDatabase([
+      [{ ...row, is_durable: true, expires_at: null }],
+    ]);
+    expect(
+      await claimFileDeletion("F-ABCDE", "expired", db, () => at),
+    ).toBeNull();
+    expect(db.calls.map((c) => c.text.split(" ")[0])).toEqual([
+      "BEGIN",
+      "SELECT",
+      "COMMIT",
+    ]);
+  });
+  it("commits a deletion claim before returning it for unlink", async () => {
+    const claimed = {
+      ...row,
+      lifecycle_state: "deleting",
+      deletion_claim_id: "synthetic-claim",
+      deletion_claimed_at: at,
+      deletion_claim_reason: "manual",
+    };
+    const db = new FakeDatabase([[row], [claimed]]);
+    const r = await claimFileDeletion("F-ABCDE", "manual", db, () => at);
+    expect(r?.deletionClaimId).toBe("synthetic-claim");
+    expect(db.calls.at(-1)?.text).toBe("COMMIT");
+    expect(db.calls[2].text).toContain("lifecycle_state='deleting'");
+  });
+  it("finalizes only the matching committed claim", async () => {
+    const db = new FakeDatabase([
+      [{ ...row, lifecycle_state: "deleted", deleted_at: at }],
+    ]);
+    await finalizeFileDeletion("F-ABCDE", "synthetic-claim", db);
+    expect(db.calls[0].text).toContain(
+      "lifecycle_state='deleting' AND deletion_claim_id=$2",
+    );
+    expect(db.calls[0].params).toEqual(["F-ABCDE", "synthetic-claim"]);
   });
 });

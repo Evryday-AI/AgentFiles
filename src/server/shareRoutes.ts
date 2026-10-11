@@ -1,3 +1,10 @@
+import { fileIsAvailable } from "./filePolicy.js";
+import {
+  checkMutationPolicy,
+  registerResponsePolicy,
+  sendControlledError,
+  strictObject,
+} from "./requestPolicy.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
@@ -8,7 +15,11 @@ import {
 } from "./auth.js";
 import type { AppConfig } from "./config.js";
 import { unconfiguredDatabase, type Queryable } from "./db.js";
-import { findFileByCode, type FileRecord, type UploadedByType } from "./filesRepo.js";
+import {
+  findFileByCode,
+  type FileRecord,
+  type UploadedByType,
+} from "./filesRepo.js";
 import { openDownloadStream as defaultOpenDownloadStream } from "./storage.js";
 
 export interface ShareLinkRecord {
@@ -37,8 +48,14 @@ export interface CreateShareLinkInput {
 
 interface ShareRepo {
   findFileByCode(code: string, client?: Queryable): Promise<FileRecord | null>;
-  createShareLink(input: CreateShareLinkInput, client?: Queryable): Promise<ShareLinkRecord>;
-  revokeShareLink(id: string, client?: Queryable): Promise<ShareLinkRecord | null>;
+  createShareLink(
+    input: CreateShareLinkInput,
+    client?: Queryable,
+  ): Promise<ShareLinkRecord>;
+  revokeShareLink(
+    id: string,
+    client?: Queryable,
+  ): Promise<ShareLinkRecord | null>;
   claimShareDownload(
     tokenHash: string,
     now: Date,
@@ -47,7 +64,10 @@ interface ShareRepo {
 }
 
 interface ShareStorage {
-  openDownloadStream(storageRoot: string, storageKey: string): Promise<NodeJS.ReadableStream>;
+  openDownloadStream(
+    storageRoot: string,
+    storageKey: string,
+  ): Promise<NodeJS.ReadableStream>;
 }
 
 export interface ShareRoutesDependencies {
@@ -79,27 +99,39 @@ export async function registerShareRoutes(
   server: FastifyInstance,
   dependencies: ShareRoutesDependencies,
 ) {
+  registerResponsePolicy(server);
+  server.setErrorHandler(sendControlledError);
   const config = dependencies.config;
   const client = dependencies.db;
   const repo = { ...defaultRepo, ...dependencies.repo };
   const storage = { ...defaultStorage, ...dependencies.storage };
   const now = dependencies.now ?? (() => new Date());
-  const resolvePrincipal = dependencies.resolvePrincipal ?? defaultResolvePrincipal;
+  const resolvePrincipal =
+    dependencies.resolvePrincipal ?? defaultResolvePrincipal;
 
   async function requirePermission(
     request: FastifyRequest,
     reply: FastifyReply,
     permission: Permission,
   ): Promise<Principal | null> {
+    checkMutationPolicy(
+      request,
+      config,
+      request.headers.authorization === undefined &&
+        Boolean(request.cookies?.agentfiles_admin),
+    );
     const principal = await resolvePrincipal(request, { config, db: client });
     if (!principal) {
       reply.code(401).send({ error: "Authentication required" });
       return null;
     }
     if (!principalHasPermission(principal, permission)) {
-      reply.code(403).send({ error: "Permission denied" });
+      reply
+        .code(403)
+        .send({ error: "Permission denied", code: "PERMISSION_DENIED" });
       return null;
     }
+    checkMutationPolicy(request, config, principal.type === "admin");
     return principal;
   }
 
@@ -111,17 +143,27 @@ export async function registerShareRoutes(
 
       const input = parseCreateShareBody(request.body, now());
       if ("error" in input) {
-        return reply.code(400).send({ error: input.error });
+        return reply
+          .code(400)
+          .send({ error: input.error, code: "INVALID_INPUT" });
       }
 
       const file = await repo.findFileByCode(request.params.code, client);
-      if (!file) {
+      if (
+        !file ||
+        file.deletedAt !== null ||
+        file.lifecycleState === "deleted"
+      ) {
         return reply.code(404).send({ error: "File not found" });
       }
-      if (!isFileAvailable(file, now())) {
+      if (!fileIsAvailable(file, now())) {
         return reply.code(410).send({ error: "File has expired" });
       }
-      if (!file.isDurable && file.expiresAt !== null && input.expiresAt > file.expiresAt) {
+      if (
+        !file.isDurable &&
+        file.expiresAt !== null &&
+        input.expiresAt > file.expiresAt
+      ) {
         return reply
           .code(400)
           .send({ error: "share expiry cannot be later than the file expiry" });
@@ -140,46 +182,91 @@ export async function registerShareRoutes(
         client,
       );
 
-      return reply.code(201).send(publicShareLink(share, config, token, file.code));
+      return reply
+        .code(201)
+        .send(publicShareLink(share, config, token, file.code));
     },
   );
 
-  server.delete<{ Params: { id: string } }>("/api/share-links/:id", async (request, reply) => {
-    const principal = await requirePermission(request, reply, "can_share");
-    if (!principal) return reply;
+  server.delete<{ Params: { id: string } }>(
+    "/api/share-links/:id",
+    async (request, reply) => {
+      const principal = await requirePermission(request, reply, "can_share");
+      if (!principal) return reply;
 
-    const share = await repo.revokeShareLink(request.params.id, client);
-    if (!share) {
-      return reply.code(404).send({ error: "Share link not found" });
-    }
+      if (request.body !== undefined) strictObject(request.body, []);
+      const share = await repo.revokeShareLink(request.params.id, client);
+      if (!share) {
+        return reply.code(404).send({ error: "Share link not found" });
+      }
 
-    return { revoked: true, id: share.id };
-  });
+      return { revoked: true, id: share.id };
+    },
+  );
 
-  server.get<{ Params: { token: string } }>("/s/:token", async (request, reply) => {
-    const share = await repo.claimShareDownload(hashShareToken(request.params.token), now(), client);
-    if (!share?.file) {
-      return reply.code(410).send({ error: "Share link is no longer available" });
-    }
+  server.get<{ Params: { token: string } }>(
+    "/s/:token",
+    async (request, reply) => {
+      const share = await repo.claimShareDownload(
+        hashShareToken(request.params.token),
+        now(),
+        client,
+      );
+      if (!share?.file || !fileIsAvailable(share.file, now())) {
+        return reply
+          .code(410)
+          .send({ error: "Share link is no longer available" });
+      }
 
-    const stream = await storage.openDownloadStream(config.storageRoot, share.file.storageKey);
+      const stream = await storage.openDownloadStream(
+        config.storageRoot,
+        share.file.storageKey,
+      );
 
-    return reply
-      .type(safeMimeType(share.file.mimeType))
-      .header("content-disposition", contentDispositionAttachment(share.file.originalName))
-      .send(stream);
-  });
+      return reply
+        .type(safeMimeType(share.file.mimeType))
+        .header(
+          "content-disposition",
+          contentDispositionAttachment(share.file.originalName),
+        )
+        .send(stream);
+    },
+  );
 }
 
 function parseCreateShareBody(
   body: Record<string, unknown> | undefined,
   now: Date,
 ): { expiresAt: Date; maxDownloads: number | null } | { error: string } {
+  body = strictObject(body, [
+    "expires_at",
+    "expiresAt",
+    "max_downloads",
+    "maxDownloads",
+  ]);
+  if (
+    (body.expires_at !== undefined && body.expiresAt !== undefined) ||
+    (body.max_downloads !== undefined && body.maxDownloads !== undefined)
+  )
+    return { error: "Conflicting aliases" };
   const rawExpiresAt = body?.expires_at ?? body?.expiresAt;
-  if (typeof rawExpiresAt !== "string") {
+  if (
+    typeof rawExpiresAt !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(
+      rawExpiresAt,
+    )
+  ) {
     return { error: "expires_at is required" };
   }
 
+  const [year, month, day] = rawExpiresAt.slice(0, 10).split("-").map(Number);
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > new Date(Date.UTC(year, month, 0)).getUTCDate()
+  )
+    return { error: "expires_at must be a future ISO date" };
   const expiresAt = new Date(rawExpiresAt);
   if (Number.isNaN(expiresAt.getTime()) || expiresAt <= now) {
     return { error: "expires_at must be a future ISO date" };
@@ -190,8 +277,13 @@ function parseCreateShareBody(
     return { expiresAt, maxDownloads: null };
   }
 
-  const maxDownloads = Number(rawMaxDownloads);
-  if (!Number.isInteger(maxDownloads) || maxDownloads < 1) {
+  const maxDownloads = rawMaxDownloads;
+  if (
+    typeof maxDownloads !== "number" ||
+    !Number.isInteger(maxDownloads) ||
+    maxDownloads < 1 ||
+    maxDownloads > 2147483647
+  ) {
     return { error: "max_downloads must be a positive integer" };
   }
 
@@ -233,7 +325,9 @@ async function createShareLink(
     ],
   );
 
-  return mapShareLinkRow(requiredRow(result.rows[0], "Share link insert did not return a row"));
+  return mapShareLinkRow(
+    requiredRow(result.rows[0], "Share link insert did not return a row"),
+  );
 }
 
 async function revokeShareLink(
@@ -271,8 +365,8 @@ async function claimShareDownload(
             SELECT 1
             FROM files f
             WHERE f.id = sl.file_id
-              AND f.deleted_at IS NULL
-              AND (f.is_durable OR f.expires_at IS NULL OR f.expires_at > $2)
+              AND f.lifecycle_state = 'active' AND f.deleted_at IS NULL
+              AND (f.is_durable OR f.expires_at > $2)
           )
         RETURNING
           sl.id,
@@ -312,20 +406,23 @@ async function claimShareDownload(
         f.is_durable AS download_is_durable,
         f.deleted_at AS download_deleted_at,
         f.deleted_reason AS download_deleted_reason,
+        f.lifecycle_state AS download_lifecycle_state,
         f.sha256 AS download_sha256,
         f.thumbnail_key AS download_thumbnail_key,
         f.metadata AS download_metadata
       FROM updated
       JOIN files f ON f.id = updated.file_id
-      WHERE f.deleted_at IS NULL
-        AND (f.is_durable OR f.expires_at IS NULL OR f.expires_at > $2)
+      WHERE f.lifecycle_state = 'active' AND f.deleted_at IS NULL
+        AND (f.is_durable OR f.expires_at > $2)
       LIMIT 1
     `,
     [tokenHash, now],
   );
 
   const row = result.rows[0];
-  return row ? { ...mapShareLinkRow(row), file: mapDownloadFileRow(row) } : null;
+  return row
+    ? { ...mapShareLinkRow(row), file: mapDownloadFileRow(row) }
+    : null;
 }
 
 function publicShareLink(
@@ -348,10 +445,6 @@ function publicShareLink(
 
 function absoluteUrl(baseUrl: string, path: string): string {
   return new URL(path, baseUrl).toString();
-}
-
-function isFileAvailable(file: FileRecord, at: Date): boolean {
-  return file.isDurable || file.expiresAt === null || file.expiresAt > at;
 }
 
 interface ShareLinkRow {
@@ -383,6 +476,7 @@ interface ShareLinkDownloadRow extends ShareLinkRow {
   download_is_durable: boolean;
   download_deleted_at: Date | string | null;
   download_deleted_reason: string | null;
+  download_lifecycle_state: FileRecord["lifecycleState"];
   download_sha256: string | null;
   download_thumbnail_key: string | null;
   download_metadata: Record<string, unknown> | null;
@@ -433,6 +527,10 @@ function mapDownloadFileRow(row: ShareLinkDownloadRow): FileRecord {
     isDurable: row.download_is_durable,
     deletedAt: mapNullableDate(row.download_deleted_at),
     deletedReason: row.download_deleted_reason,
+    lifecycleState: row.download_lifecycle_state,
+    deletionClaimId: null,
+    deletionClaimedAt: null,
+    deletionClaimReason: null,
     sha256: row.download_sha256,
     thumbnailKey: row.download_thumbnail_key,
     metadata: row.download_metadata ?? {},
@@ -458,7 +556,9 @@ function safeMimeType(value: string | null | undefined): string {
   if (!value || /[\x00-\x1F\x7F]/.test(value)) {
     return "application/octet-stream";
   }
-  return /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(value)
+  return /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(
+    value,
+  )
     ? value
     : "application/octet-stream";
 }
@@ -481,7 +581,8 @@ function asciiFallbackFilename(value: string): string {
 }
 
 function encodeRfc5987ValueChars(value: string): string {
-  return encodeURIComponent(value).replace(/['()*]/g, (character) =>
-    `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  return encodeURIComponent(value).replace(
+    /['()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
   );
 }

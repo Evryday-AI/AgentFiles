@@ -1,3 +1,11 @@
+import {
+  checkMutationPolicy,
+  registerResponsePolicy,
+  sendControlledError,
+  strictObject,
+  strictBoolean,
+  invalidInput,
+} from "./requestPolicy.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { cookieIsSecure, type AppConfig } from "./config.js";
 import { unconfiguredDatabase, type Queryable } from "./db.js";
@@ -78,6 +86,8 @@ export async function registerAdminRoutes(
   server: FastifyInstance,
   options: AdminRoutesOptions,
 ) {
+  registerResponsePolicy(server);
+  server.setErrorHandler(sendControlledError);
   const client = options.db ?? db;
   const config = options.config;
   const storage = { ...defaultStorage, ...options.storage };
@@ -99,10 +109,21 @@ export async function registerAdminRoutes(
       },
     },
     async (request, reply) => {
-      const body = asRecord(request.body);
+      checkMutationPolicy(request, config, false, true);
+      const body = strictObject(request.body, ["username", "password"]);
+      if (
+        typeof body.username !== "string" ||
+        Buffer.byteLength(body.username) > 128 ||
+        typeof body.password !== "string" ||
+        Buffer.byteLength(body.password) > 4096
+      )
+        invalidInput("Invalid credentials input");
       const username = typeof body?.username === "string" ? body.username : "";
       const password = typeof body?.password === "string" ? body.password : "";
-      const passwordMatches = await verifyApiKeySecret(config.adminPasswordHash, password);
+      const passwordMatches = await verifyApiKeySecret(
+        config.adminPasswordHash,
+        password,
+      );
 
       if (username !== config.adminUsername || !passwordMatches) {
         return reply.code(401).send({ error: "Invalid username or password" });
@@ -136,6 +157,15 @@ export async function registerAdminRoutes(
   );
 
   server.post("/api/auth/logout", async (request, reply) => {
+    checkMutationPolicy(request, config, true);
+    if (request.headers.authorization !== undefined) {
+      const principal = await resolvePrincipal(request, { config, db: client });
+      return reply.code(principal ? 403 : 401).send({
+        error: "Administrator cookie required",
+        code: "PERMISSION_DENIED",
+      });
+    }
+    if (request.body !== undefined) strictObject(request.body, []);
     const token = getSessionTokenFromRequest(request);
     if (token) {
       await client.query(
@@ -161,7 +191,9 @@ export async function registerAdminRoutes(
     return {
       authenticated: true,
       principal:
-        principal.type === "admin" ? publicAdminPrincipal(config) : publicApiKeyPrincipal(principal),
+        principal.type === "admin"
+          ? publicAdminPrincipal(config)
+          : publicApiKeyPrincipal(principal),
     };
   });
 
@@ -308,6 +340,7 @@ export async function registerAdminRoutes(
       return;
     }
 
+    if (request.body !== undefined) strictObject(request.body, []);
     const { id } = request.params as { id?: string };
     if (!id) {
       return reply.code(400).send({ error: "API key id is required" });
@@ -337,17 +370,38 @@ async function requireAdmin(
   config: AppConfig,
   client: Queryable,
 ): Promise<AdminPrincipal | null> {
+  checkMutationPolicy(request, config, true);
   const principal = await resolvePrincipal(request, { config, db: client });
   if (principal?.type !== "admin") {
-    reply.code(403).send({ error: "Admin authentication is required" });
+    reply.code(403).send({
+      error: "Admin authentication is required",
+      code: "PERMISSION_DENIED",
+    });
     return null;
   }
+  checkMutationPolicy(request, config, true);
   return principal;
 }
 
 function parseApiKeyBody(body: unknown): ApiKeyBody & { name?: string } {
-  const record = asRecord(body) ?? {};
+  const record = strictObject(body, [
+    "name",
+    "can_upload",
+    "can_download",
+    "can_list",
+    "can_delete",
+    "can_mark_durable",
+    "can_share",
+  ]);
   const parsed: ApiKeyBody & { name?: string } = {};
+  if (
+    record.name !== undefined &&
+    (typeof record.name !== "string" ||
+      !record.name.trim() ||
+      Buffer.byteLength(record.name) > 128 ||
+      record.name.includes("\0"))
+  )
+    invalidInput("Invalid API key name");
   if (typeof record.name === "string" && record.name.trim()) {
     parsed.name = record.name.trim();
   }
@@ -360,8 +414,8 @@ function parseApiKeyBody(body: unknown): ApiKeyBody & { name?: string } {
     "can_mark_durable",
     "can_share",
   ] as const) {
-    if (typeof record[field] === "boolean") {
-      parsed[field] = record[field];
+    if (record[field] !== undefined) {
+      parsed[field] = strictBoolean(record[field]);
     }
   }
 
@@ -437,20 +491,16 @@ function isBodylessJsonLogoutRequest(request: FastifyRequest): boolean {
     request.url.split("?", 1)[0] === "/api/auth/logout" &&
     typeof contentType === "string" &&
     contentType.toLowerCase().includes("application/json") &&
-    (request.headers["content-length"] === undefined || request.headers["content-length"] === "0") &&
+    (request.headers["content-length"] === undefined ||
+      request.headers["content-length"] === "0") &&
     request.headers["transfer-encoding"] === undefined
   );
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return null;
-  }
-  return value as Record<string, unknown>;
-}
-
 function toIsoString(value: Date | string): string {
-  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+  return value instanceof Date
+    ? value.toISOString()
+    : new Date(value).toISOString();
 }
 
 function toNullableIsoString(value: Date | string | null): string | null {

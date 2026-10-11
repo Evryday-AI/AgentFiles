@@ -1,10 +1,12 @@
 import { randomBytes } from "node:crypto";
 
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+export const FILE_CODE_NAMESPACE_SIZE = ALPHABET.length ** 5;
+export const FILE_CODE_ALLOCATION_ATTEMPTS = 32;
 
-export function createFileCode(length = 5): string {
+export function createFileCode(): string {
   let value = "F-";
-  const bytes = randomBytes(length);
+  const bytes = randomBytes(5);
   for (const byte of bytes) {
     value += ALPHABET[byte % ALPHABET.length];
   }

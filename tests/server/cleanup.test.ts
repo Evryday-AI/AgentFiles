@@ -6,9 +6,10 @@ describe("cleanupExpiredFiles", () => {
     const deleteStoredFile = vi.fn().mockResolvedValue(undefined);
     const repo = {
       findExpiredFiles: vi.fn().mockResolvedValue([
-        { code: "F-OLD01", storage_key: "old.dat", is_durable: false },
+        { code: "F-ALD22", storage_key: "old.dat", is_durable: false },
       ]),
-      markFileDeleted: vi.fn().mockResolvedValue(undefined),
+      claimFileDeletion: vi.fn().mockResolvedValue({ code: "F-ALD22", storageKey: "old.dat", deletionClaimId: "synthetic-claim" }),
+      finalizeFileDeletion: vi.fn().mockResolvedValue({ lifecycleState: "deleted" }),
     };
 
     const result = await cleanupExpiredFiles({
@@ -21,9 +22,9 @@ describe("cleanupExpiredFiles", () => {
     expect(result.deleted).toBe(1);
     expect(result.failures).toEqual([]);
     expect(deleteStoredFile).toHaveBeenCalledWith("/tmp/storage", "old.dat");
-    expect(repo.markFileDeleted).toHaveBeenCalledWith("F-OLD01");
+    expect(repo.finalizeFileDeletion).toHaveBeenCalledWith("F-ALD22", "synthetic-claim");
     expect(deleteStoredFile.mock.invocationCallOrder[0]).toBeLessThan(
-      repo.markFileDeleted.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+      repo.finalizeFileDeletion.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
     );
   });
 
@@ -31,9 +32,10 @@ describe("cleanupExpiredFiles", () => {
     const deleteError = new Error("disk offline");
     const repo = {
       findExpiredFiles: vi.fn().mockResolvedValue([
-        { code: "F-OLD01", storage_key: "old.dat", is_durable: false },
+        { code: "F-ALD22", storage_key: "old.dat", is_durable: false },
       ]),
-      markFileDeleted: vi.fn().mockResolvedValue(undefined),
+      claimFileDeletion: vi.fn().mockResolvedValue({ code: "F-ALD22", storageKey: "old.dat", deletionClaimId: "synthetic-claim" }),
+      finalizeFileDeletion: vi.fn().mockResolvedValue({ lifecycleState: "deleted" }),
     };
 
     const result = await cleanupExpiredFiles({
@@ -46,9 +48,9 @@ describe("cleanupExpiredFiles", () => {
     expect(result).toEqual({
       deleted: 0,
       failed: 1,
-      failures: [{ code: "F-OLD01", storageKey: "old.dat", error: "disk offline" }],
+      failures: [{ code: "F-ALD22", storageKey: "old.dat", error: "File deletion failed; claim retained for recovery" }],
     });
-    expect(repo.markFileDeleted).not.toHaveBeenCalled();
+    expect(repo.finalizeFileDeletion).not.toHaveBeenCalled();
   });
 
   it("runs cleanup on the configured interval until stopped", async () => {

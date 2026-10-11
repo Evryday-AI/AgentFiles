@@ -40,7 +40,7 @@ python examples/roundtrip.py
 
 Create a public share only when the requester explicitly asks: `POST /api/files/:code/share` with JSON `expires_at` (future ISO date, no later than temporary-file expiry) and optional positive integer `max_downloads`. Return `public_url`, `expires_at`, and `id` for revocation. This URL is a bearer credential; disclose it only to the requested audience. Revoke only with explicit intent using `DELETE /api/share-links/:id`.
 
-Persistence requires explicit intent: multipart `durable=true` on upload, or `PATCH /api/files/:code` with JSON `{"durable": true}`. Check permission first and confirm the returned `durable` value. The source baseline silently downgrades denied durable-upload intent; planned C1 changes this to 403 and adds operator persistence policy. Do not claim that policy is implemented. Setting `durable` to false starts a fresh default retention interval.
+Persistence requires explicit intent: multipart `durable=true` on upload, or `PATCH /api/files/:code` with JSON `{"durable": true}`. Check permission first and confirm the returned `durable` value. The installation must also allow persistence. Forbidden intent returns 403 PERSISTENCE_DISABLED or PERMISSION_DENIED; never retry by silently omitting that intent. Malformed flags return 400 INVALID_INPUT. A claimed file returns 409 FILE_DELETION_IN_PROGRESS, and an expired file returns 410; keep cannot resurrect either. Treat a failed/ambiguous keep commit as an unknown outcome until fresh authorized metadata verifies it. Setting `durable` to false starts a fresh default retention interval.
 
 Delete only with explicit intent using `DELETE /api/files/:code`; confirm `deleted: true`. Do not infer permission to share, persist, revoke, or delete from permission to upload.
 
@@ -55,7 +55,7 @@ Delete only with explicit intent using `DELETE /api/files/:code`; confirm `delet
 | Delete | `can_delete` | `canDelete` |
 | Share/revoke | `can_share` | `canShare` |
 
-Stop on 401/403. A 404 means missing/removed; 410 means expired/unavailable before cleanup or an unavailable share. On 413, reduce the file or ask the operator to review limits. On 429, honor `Retry-After` before a new safe attempt. Capacity 507 is planned in C2; the baseline has no capacity admission guarantee. `/api/instance` is also planned, not a current connection endpoint.
+Stop on 401/403. A 404 means missing/removed; 409 FILE_DELETION_IN_PROGRESS means a claim prevents retention changes; 410 means expired/claimed before finalization or an unavailable share. On 413, reduce the file or ask the operator to review limits. On 429, honor `Retry-After` before a new safe attempt. 503 CODE_ALLOCATION_RETRY_EXHAUSTED means bounded code-allocation attempts failed; 507 CODE_SPACE_EXHAUSTED means the permanent code namespace is full. Capacity admission remains C2 work. `/api/instance` is also planned, not a current connection endpoint.
 
 A timeout, dropped connection, malformed upload response, or uncertain 5xx after upload can mean the file was created. **Never blindly repeat POST** and never invent idempotency support. Reconcile using known metadata or authorized paginated list access, comparing instance, creation time, name, size, and checksum; filenames alone cannot identify an upload. If safe reconciliation is impossible, explain the unknown outcome and ask the requester how to proceed.
 
