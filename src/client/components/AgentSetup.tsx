@@ -40,87 +40,106 @@ export function AgentSetup({
   const [checkKey, setCheckKey] = useState("");
   const [connection, setConnection] = useState<Principal | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const generation = useRef(0);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [keyBusy, setKeyBusy] = useState(true);
+  const [checking, setChecking] = useState(false);
+  const busy = keyBusy || checking;
+  const lifetime = useRef(0);
+  const secretGeneration = useRef(0);
+  const checkGeneration = useRef(0);
   useEffect(() => {
-    const current = ++generation.current;
+    const mounted = ++lifetime.current;
     void listApiKeys()
       .then((items) => {
-        if (generation.current === current) setKeys(items);
+        if (lifetime.current === mounted) setKeys(items);
       })
       .catch(() => {
-        if (generation.current === current) setError("API keys unavailable");
+        if (lifetime.current === mounted) setError("API keys unavailable");
+      })
+      .finally(() => {
+        if (lifetime.current === mounted) setKeyBusy(false);
       });
     return () => {
-      generation.current++;
+      lifetime.current++;
+      secretGeneration.current++;
+      checkGeneration.current++;
     };
   }, []);
   function clearSecret() {
-    generation.current++;
+    secretGeneration.current++;
+    checkGeneration.current++;
     setSecret(null);
     setCheckKey("");
     setConnection(null);
-    setBusy(false);
+    setConnectionError(null);
+    setChecking(false);
   }
   async function create(event: FormEvent) {
     event.preventDefault();
     if (!name.trim() || busy) return;
     clearSecret();
-    const current = generation.current;
-    setBusy(true);
+    const mounted = lifetime.current;
+    const secretVersion = secretGeneration.current;
+    setKeyBusy(true);
     setError(null);
     try {
       const created = await createApiKey({ name: name.trim(), ...permissions });
-      if (generation.current !== current) return;
-      setSecret({ id: created.apiKey.id, value: created.secret });
+      if (lifetime.current !== mounted) return;
+      if (secretGeneration.current === secretVersion)
+        setSecret({ id: created.apiKey.id, value: created.secret });
       setKeys((items) => [created.apiKey, ...items]);
       setName("");
     } catch {
-      if (generation.current === current)
+      if (lifetime.current === mounted)
         setError(
           "Key creation failed. Check the key list before creating another key.",
         );
     } finally {
-      if (generation.current === current) setBusy(false);
+      if (lifetime.current === mounted) setKeyBusy(false);
     }
   }
   async function check() {
-    const current = generation.current;
-    setBusy(true);
-    setError(null);
+    if (busy || (!checkKey && !secret)) return;
+    const mounted = lifetime.current;
+    const current = ++checkGeneration.current;
+    const isCurrent = () =>
+      lifetime.current === mounted && checkGeneration.current === current;
+    setChecking(true);
+    setConnectionError(null);
     setConnection(null);
     try {
       const result = await checkAgentConnection(
         checkKey || secret?.value || "",
       );
-      if (generation.current !== current) return;
+      if (!isCurrent()) return;
       if (!result.authenticated || result.principal?.type !== "api_key")
-        setError(
+        setConnectionError(
           "Connection failed. Create a new minimal key or check the supplied secret.",
         );
       else setConnection(result.principal);
     } catch {
-      if (generation.current === current)
-        setError(
+      if (isCurrent())
+        setConnectionError(
           "Connection failed. Check the supplied key and instance connection.",
         );
     } finally {
-      if (generation.current === current) setBusy(false);
+      if (isCurrent()) setChecking(false);
     }
   }
   async function revoke(id: string) {
+    if (busy) return;
     clearSecret();
-    const current = generation.current;
+    const mounted = lifetime.current;
     setError(null);
-    setBusy(true);
+    setKeyBusy(true);
     try {
       await revokeApiKey(id);
-      if (generation.current === current)
+      if (lifetime.current === mounted)
         setKeys((items) => items.filter((key) => key.id !== id));
     } catch {
-      if (generation.current === current) setError("Key revocation failed");
+      if (lifetime.current === mounted) setError("Key revocation failed");
     } finally {
-      if (generation.current === current) setBusy(false);
+      if (lifetime.current === mounted) setKeyBusy(false);
     }
   }
   return (
@@ -203,9 +222,9 @@ export function AgentSetup({
           autoComplete="off"
           value={checkKey}
           onChange={(e) => {
-            generation.current++;
-            setBusy(false);
-            setError(null);
+            checkGeneration.current++;
+            setChecking(false);
+            setConnectionError(null);
             setCheckKey(e.target.value);
             setConnection(null);
           }}
@@ -221,6 +240,11 @@ export function AgentSetup({
       {error ? (
         <p role="alert" className="notice error">
           {error}
+        </p>
+      ) : null}
+      {connectionError ? (
+        <p role="alert" className="notice error">
+          {connectionError}
         </p>
       ) : null}
       {connection?.type === "api_key" ? (

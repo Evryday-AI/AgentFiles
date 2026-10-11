@@ -275,3 +275,70 @@ test("slow metadata cannot replace a newer selected file", async ({ page }) => {
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "Find file" })).toBeFocused();
 });
+
+test("initial private deep link works when listing fails and preserves actual expiry", async ({
+  page,
+}) => {
+  // Finish beforeEach's library request before observing the navigation's responses.
+  await expect(
+    page.getByRole("button", { name: "Refresh", exact: true }),
+  ).toBeEnabled();
+  const { target } = JSON.parse(
+    await readFile(join(directory, "files.json"), "utf8"),
+  );
+  const state = JSON.parse(
+    await readFile(join(directory, "state.json"), "utf8"),
+  );
+  let listStatus = 403;
+  // Only listing is synthetic here: exact metadata still reaches the real server.
+  await page.route("**/api/files?**", (route) =>
+    route.fulfill({
+      status: listStatus,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "synthetic list failure" }),
+    }),
+  );
+  const metadata = page.waitForResponse((response) =>
+    response.url().endsWith(`/api/files/${target.code}`),
+  );
+  const deniedList = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/files" &&
+      response.request().method() === "GET",
+  );
+  await page.goto(`/files/${target.code}`);
+  expect((await deniedList).status()).toBe(403);
+  expect((await metadata).status()).toBe(200);
+  await expect(
+    page.getByRole("complementary", { name: "File detail" }),
+  ).toContainText(target.name);
+  const db = new pg.Pool({ connectionString: state.databaseUrl });
+  try {
+    await db.query(
+      "UPDATE files SET expires_at=now()-interval '1 second' WHERE code=$1",
+      [target.code],
+    );
+    listStatus = 500;
+    const expired = page.waitForResponse((response) =>
+      response.url().endsWith(`/api/files/${target.code}`),
+    );
+    const failedList = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/files" &&
+        response.request().method() === "GET",
+    );
+    await page.goto(`/files/${target.code}`);
+    expect((await failedList).status()).toBe(500);
+    expect((await expired).status()).toBe(410);
+    await expect(page.getByRole("alert")).toContainText("expired (410)");
+    await expect(
+      page.getByRole("heading", { name: target.name, exact: true }),
+    ).toHaveCount(0);
+  } finally {
+    await db.query(
+      "UPDATE files SET expires_at=now()+interval '7 days' WHERE code=$1",
+      [target.code],
+    );
+    await db.end();
+  }
+});

@@ -191,3 +191,85 @@ it("keeps gallery order when selecting an already listed file", async () => {
   ).toBe(file.name);
   await v.unmount();
 });
+
+it.each([
+  [403, 200],
+  [500, 410],
+])(
+  "starts initial exact lookup independently of list status %i and preserves file status %i",
+  async (listStatus, fileStatus) => {
+    setup(fileStatus);
+    history.replaceState(null, "", `/files/${file.code}`);
+    const previous = fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init: RequestInit) =>
+        url.startsWith("/api/files?")
+          ? Promise.resolve(
+              new Response(JSON.stringify({ error: "list failure" }), {
+                status: listStatus,
+              }),
+            )
+          : previous(url, init),
+      ),
+    );
+    const view = await render(<App />);
+    try {
+      expect(fetch).toHaveBeenCalledWith(
+        `/api/files/${file.code}`,
+        expect.anything(),
+      );
+      if (fileStatus === 200) {
+        expect(
+          view.host.querySelector('[aria-label="File detail"]')?.textContent,
+        ).toContain(file.name);
+      } else {
+        expect(view.host.textContent).toContain("expired (410)");
+        expect(view.host.textContent).not.toContain("File refresh failed");
+      }
+    } finally {
+      await view.unmount();
+    }
+  },
+);
+it("keeps initial exact metadata when a slow list returns stale metadata for the same code", async () => {
+  setup();
+  history.replaceState(null, "", `/files/${file.code}`);
+  const previous = fetch;
+  let finishList!: (value: Response) => void;
+  vi.stubGlobal("fetch", (url: string, init: RequestInit) =>
+    url.startsWith("/api/files?")
+      ? new Promise<Response>((resolve) => {
+          finishList = resolve;
+        })
+      : previous(url, init),
+  );
+  const view = await render(<App />);
+  try {
+    expect(
+      view.host.querySelector('[aria-label="File detail"]')?.textContent,
+    ).toContain(file.name);
+    await act(async () =>
+      finishList(
+        new Response(
+          JSON.stringify({
+            files: [
+              { ...file, name: "stale-list.txt" },
+              { ...file, code: "F-XYZ23", name: "newer-list.txt" },
+            ],
+          }),
+        ),
+      ),
+    );
+    expect(
+      view.host.querySelector('[aria-label="File detail"]')?.textContent,
+    ).toContain(file.name);
+    expect(view.host.textContent).not.toContain("stale-list.txt");
+    expect(view.host.textContent).toContain("newer-list.txt");
+  } finally {
+    await act(async () =>
+      finishList(new Response(JSON.stringify({ files: [] }))),
+    );
+    await view.unmount();
+  }
+});

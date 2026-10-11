@@ -91,7 +91,9 @@ export function App() {
 
   useEffect(() => {
     if (principal) {
-      void refreshFiles();
+      const code = selectedCodeRef.current;
+      if (code) void lookup(code);
+      void refreshFiles({ preserveLookup: !!code });
     }
   }, [principal]);
 
@@ -134,21 +136,41 @@ export function App() {
     }
   }
 
-  async function refreshFiles(options: { adjustSelection?: boolean } = {}) {
+  async function refreshFiles(
+    options: { adjustSelection?: boolean; preserveLookup?: boolean } = {},
+  ) {
     const generation = sessionGeneration.current;
+    const selection = selectionGeneration.current;
     setFilesLoading(true);
-    setError(null);
+    if (!options.preserveLookup) setError(null);
     try {
       const current = selectedCodeRef.current;
       const listedFiles = await listFiles();
-      const nextFiles = current
-        ? await prependSelectedFile(listedFiles, current)
-        : listedFiles;
+      const nextFiles =
+        current && !options.preserveLookup
+          ? await prependSelectedFile(listedFiles, current)
+          : listedFiles;
       if (
         generation !== sessionGeneration.current ||
+        selection !== selectionGeneration.current ||
         current !== selectedCodeRef.current
       )
         return;
+      if (options.preserveLookup) {
+        // Initial exact lookup owns the selected metadata and its error.
+        // A later list may include stale metadata or omit this older file.
+        setFiles((items) => {
+          const selected = items.find((item) => item.code === current);
+          const withoutSelected = nextFiles.filter(
+            (item) => item.code !== current,
+          );
+          if (!selected) return withoutSelected;
+          return nextFiles.some((item) => item.code === current)
+            ? nextFiles.map((item) => (item.code === current ? selected : item))
+            : [selected, ...withoutSelected];
+        });
+        return;
+      }
       setFiles(nextFiles);
       if (options.adjustSelection ?? true) {
         updateSelectedCode((selected) =>
@@ -158,7 +180,12 @@ export function App() {
         );
       }
     } catch (error) {
-      if (generation === sessionGeneration.current) setError(fileError(error));
+      if (
+        !options.preserveLookup &&
+        generation === sessionGeneration.current &&
+        selection === selectionGeneration.current
+      )
+        setError(fileError(error));
     } finally {
       setFilesLoading(false);
     }

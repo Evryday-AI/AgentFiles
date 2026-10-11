@@ -260,3 +260,138 @@ it("reports settled unavailable storage instead of checking forever", async () =
   expect(view.host.textContent).not.toContain("Checking storage");
   await view.unmount();
 });
+
+it("retains a pending key-list response after the connection input changes", async () => {
+  setup();
+  const previous = fetch;
+  let finishList!: (value: Response) => void;
+  vi.stubGlobal("fetch", (url: string, init: RequestInit) =>
+    url === "/api/admin/api-keys" && init.method !== "POST"
+      ? new Promise<Response>((resolve) => {
+          finishList = resolve;
+        })
+      : previous(url, init),
+  );
+  const view = await render(<App />);
+  await click(view.host, "settings");
+  await input(view.host, "Check an existing key", "edited-synthetic-key");
+  await act(async () =>
+    finishList(
+      new Response(
+        JSON.stringify({
+          apiKeys: [
+            {
+              id: "existing",
+              name: "existing synthetic agent",
+              canUpload: true,
+              canDownload: true,
+            },
+          ],
+        }),
+      ),
+    ),
+  );
+  try {
+    expect(view.host.querySelector(".api-key-list")?.textContent).toContain(
+      "existing synthetic agent",
+    );
+    expect(view.host.querySelector(".api-key-row button")?.textContent).toBe(
+      "Revoke",
+    );
+  } finally {
+    await view.unmount();
+  }
+});
+it("keeps key creation pending and exposes its one-time result after connection input changes", async () => {
+  setup();
+  const previous = fetch;
+  let finishCreate!: (value: Response) => void;
+  vi.stubGlobal("fetch", (url: string, init: RequestInit) =>
+    url === "/api/admin/api-keys" && init.method === "POST"
+      ? new Promise<Response>((resolve) => {
+          finishCreate = resolve;
+        })
+      : previous(url, init),
+  );
+  const view = await render(<App />);
+  await click(view.host, "settings");
+  await input(view.host, "Key name", "pending synthetic agent");
+  await submit(view.host);
+  await input(view.host, "Check an existing key", "edited-synthetic-key");
+  try {
+    expect(
+      view.host.querySelector<HTMLButtonElement>(
+        '.key-form button[type="submit"]',
+      )?.disabled,
+    ).toBe(true);
+    await act(async () =>
+      finishCreate(
+        new Response(
+          JSON.stringify({
+            apiKey: { id: "created", name: "pending synthetic agent" },
+            secret: "synthetic-created-once",
+          }),
+        ),
+      ),
+    );
+    expect(view.host.querySelector(".secret-box")?.textContent).toContain(
+      "synthetic-created-once",
+    );
+    expect(view.host.querySelector(".api-key-list")?.textContent).toContain(
+      "pending synthetic agent",
+    );
+    await click(view.host, "Dismiss secret");
+    expect(view.host.textContent).not.toContain("synthetic-created-once");
+  } finally {
+    await act(async () =>
+      finishCreate(
+        new Response(
+          JSON.stringify({
+            apiKey: { id: "created" },
+            secret: "synthetic-created-once",
+          }),
+        ),
+      ),
+    );
+    await view.unmount();
+  }
+});
+it.each(["Dismiss secret", "Revoke"])(
+  "does not restore pending connection success after %s",
+  async (action) => {
+    setup();
+    const view = await render(<App />);
+    await click(view.host, "settings");
+    await input(view.host, "Key name", "lifecycle fixture");
+    await submit(view.host);
+    const previous = fetch;
+    let finishCheck!: (value: Response) => void;
+    vi.stubGlobal("fetch", (url: string, init: RequestInit) =>
+      init.credentials === "omit"
+        ? new Promise<Response>((resolve) => {
+            finishCheck = resolve;
+          })
+        : previous(url, init),
+    );
+    await click(view.host, "Check connection");
+    // Revoke is disabled during a check: dismiss first cancels that check,
+    // allowing revocation while its HTTP completion remains outstanding.
+    if (action === "Revoke") await click(view.host, "Dismiss secret");
+    await click(view.host, action);
+    await act(async () =>
+      finishCheck(
+        new Response(
+          JSON.stringify({
+            authenticated: true,
+            principal: { type: "api_key", name: "late synthetic connection" },
+          }),
+        ),
+      ),
+    );
+    expect(view.host.textContent).not.toContain("synthetic-one-time-value");
+    expect(view.host.textContent).not.toContain(
+      "Connected as late synthetic connection",
+    );
+    await view.unmount();
+  },
+);
