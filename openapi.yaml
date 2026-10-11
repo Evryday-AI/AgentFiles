@@ -134,6 +134,7 @@ paths:
       operationId: logout
       summary: Revoke and clear administrator cookie
       security:
+        - {}
         - AdminCookie: []
       responses:
         '200':
@@ -180,8 +181,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
       description: >-
-        Matching Origin required. Explicit Bearer selects key authority and returns 401/403. Body
-        may be omitted or empty JSON object.
+        Matching Origin required, including anonymous requests. Clears the cookie and returns
+        authenticated false even without a session. Explicit Bearer selects key authority and
+        returns 401/403. Body may be omitted or empty JSON object.
       requestBody:
         required: false
         content:
@@ -1361,9 +1363,17 @@ components:
         username:
           type: string
           maxLength: 128
+          x-max-utf8-bytes: 128
+          description: >-
+            At most 128 UTF-8 bytes. maxLength is a necessary character bound, not a byte count;
+            x-max-utf8-bytes documents the separately enforced server byte limit.
         password:
           type: string
           maxLength: 4096
+          x-max-utf8-bytes: 4096
+          description: >-
+            At most 4096 UTF-8 bytes. maxLength is a necessary character bound, not a byte count;
+            x-max-utf8-bytes documents the separately enforced server byte limit.
       required:
         - username
         - password
@@ -1394,6 +1404,12 @@ components:
           type: string
           minLength: 1
           maxLength: 128
+          x-max-utf8-bytes: 128
+          pattern: '^(?![\s\S]*\u0000)(?=[\s\S]*\S)[\s\S]+$'
+          description: >-
+            Must contain a non-whitespace character and no NUL. At most 128 UTF-8 bytes before
+            trimming; the stored name is trimmed. maxLength counts characters; x-max-utf8-bytes
+            documents the separately enforced server byte limit.
         can_upload:
           type: boolean
         can_download:
@@ -1849,6 +1865,12 @@ components:
           type: string
           minLength: 1
           maxLength: 128
+          x-max-utf8-bytes: 128
+          pattern: '^(?![\s\S]*\u0000)(?=[\s\S]*\S)[\s\S]+$'
+          description: >-
+            Must contain a non-whitespace character and no NUL. At most 128 UTF-8 bytes before
+            trimming; the stored name is trimmed. maxLength counts characters; x-max-utf8-bytes
+            documents the separately enforced server byte limit.
         can_upload:
           type: boolean
         can_download:

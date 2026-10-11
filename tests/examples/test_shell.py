@@ -37,6 +37,16 @@ class ShellHTTP(unittest.TestCase):
             self.assertIn('Network request failed', r.stderr)
         self.assertEqual(len(self.requests), 1)
 
+    def test_chunked_json_bound_stops_before_upload(self):
+        self.mode = 'chunked_oversize_session'
+        with tempfile.TemporaryDirectory() as directory:
+            r = self.run_shell(directory)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('Network request failed', r.stderr)
+            self.assertNotIn('synthetic-key', r.stdout + r.stderr)
+        self.assertEqual(self.chunked_responses, 1)
+        self.assertEqual([method for method, *_ in self.requests], ['GET'])
+
     def test_strict_file_code_contract(self):
         original = self.dto
         def invalid():

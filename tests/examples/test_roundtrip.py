@@ -65,11 +65,13 @@ class MockHTTP(unittest.TestCase):
         self.requests = []
         self.content = b'AgentFiles synthetic round trip\n'
         self.mode = 'normal'
+        self.chunked_responses = 0
         self.upload_received = threading.Event()
         self.release_upload = threading.Event()
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
+            protocol_version = 'HTTP/1.1'
             def log_message(self, *args):
                 pass
 
@@ -88,6 +90,23 @@ class MockHTTP(unittest.TestCase):
             def record(self):
                 owner.requests.append((self.command, self.path, self.headers.get('Authorization'), self.headers.get('Cookie')))
 
+            def respond_chunked(self, data):
+                # Actual wire framing, deliberately without Content-Length. This
+                # exercises the stream limit rather than a header precheck.
+                self.send_response(200)
+                self.send_header('Transfer-Encoding', 'chunked')
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                owner.chunked_responses += 1
+                self.close_connection = True
+                try:
+                    for offset in range(0, len(data), 16384):
+                        chunk = data[offset:offset + 16384]
+                        self.wfile.write(f'{len(chunk):x}\r\n'.encode() + chunk + b'\r\n')
+                    self.wfile.write(b'0\r\n\r\n')
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # Expected once the bounded client closes its stream.
+
             def do_GET(self):
                 self.record()
                 if self.path == '/api/auth/session':
@@ -101,6 +120,8 @@ class MockHTTP(unittest.TestCase):
                         self.respond(302, b'', Location=getattr(owner, 'redirect_target', owner.origin + '/redirect-target'))
                     elif owner.mode == 'oversize_session':
                         self.respond(200, b'x' * (2 * 1024 * 1024))
+                    elif owner.mode == 'chunked_oversize_session':
+                        self.respond_chunked(b'x' * (2 * 1024 * 1024))
                     elif owner.mode == 'cross_redirect':
                         self.respond(302, b'', Location='http://127.0.0.1:1/should-not-contact')
                     elif owner.mode == 'rate':
@@ -174,6 +195,13 @@ class MockHTTP(unittest.TestCase):
             self.assertTrue(all(auth == 'Bearer synthetic-key' and cookie is None for method, path, auth, cookie in self.requests))
             self.assertIn(self.content, self.upload_bytes)
             self.assertNotIn(b'name="durable"', self.upload_bytes)
+
+    def test_chunked_json_bound_stops_before_upload(self):
+        self.mode = 'chunked_oversize_session'
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, 'JSON response is too large'):
+            self.run_main(directory)
+        self.assertEqual(self.chunked_responses, 1)
+        self.assertEqual([method for method, *_ in self.requests], ['GET'])
 
     def test_explicit_mutations(self):
         with tempfile.TemporaryDirectory() as directory:
