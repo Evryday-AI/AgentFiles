@@ -54,6 +54,28 @@ describe("public export guard", () => {
     expect(result.status).toBe(1);
     expect(result.output).toContain("binary-artifact");
   });
+  it.each([
+    Buffer.from([1, 2, 3]),
+    Buffer.from([8, 11, 12, 27, 31, 127]),
+    Buffer.from(String.fromCharCode(0x85, 0x9f), "utf8"),
+  ])("rejects NUL-free UTF-8 non-text controls without exposing content", async (controls) => {
+    const root = await fixture();
+    const body = "synthetic-binary-body";
+    await put(root, "payload.bin", Buffer.concat([Buffer.from(body), controls]));
+    const result = scan(root);
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.output).findings).toEqual([
+      { category: "binary-artifact", count: 1, path: "payload.bin" },
+    ]);
+    expect(result.output).not.toContain(body);
+  });
+  it("preserves normal UTF-8 text with tab, LF and CR whitespace", async () => {
+    const root = await fixture();
+    await put(root, "source.txt", "café ελληνικά 中文 😀\tindent\nLF\r\nCRLF\ronly CR\n");
+    const result = scan(root);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.output).findings).toEqual([]);
+  });
   it("rejects credential patterns without revealing matched values", async () => {
     const root = await fixture();
     const secret = "af_" + "a".repeat(24) + "_" + "b".repeat(64);

@@ -77,8 +77,10 @@ async function scan({ root, tracked, patterns }) {
     let content;
     try {
       const bytes = await readFile(target);
-      if (bytes.includes(0)) throw new Error('binary');
       content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      // Text sources allow tab/LF/CR, but no other C0, DEL or C1 controls.
+      // Check decoded code points so normal UTF-8 continuation bytes stay valid.
+      if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(content)) throw new Error('binary');
     } catch { finding('binary-artifact', name); return; }
     const source = `${name}\n${content}`;
     if (credentialRules.some(expression => { expression.lastIndex = 0; return expression.test(source); })) finding('credential', name);
