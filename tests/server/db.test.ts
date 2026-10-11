@@ -46,6 +46,23 @@ describe("explicit database connection", () => {
     try { expect(parameters().ssl).toEqual({ rejectUnauthorized: false }); }
     finally { await db.close(); }
   });
+  it.each([
+    ["connectionString", "postgresql://nested.example/independent?statement_timeout=90000&query_timeout=90000"],
+    ["%63onnectionString", "postgresql://nested-user:nested-secret@nested.example/independent?statement_timeout=90000&query_timeout=90000"],
+  ])("rejects reserved query option %s before pool construction without exposing its value", async (option, nestedUrl) => {
+    ambient();
+    const outerUrl = "postgresql://explicit:explicit-secret@configured.example:5544/independent";
+    const db = createDatabase(outerUrl);
+    try {
+      // Exercise real pg.Client parsing with synthetic PG* settings and no network.
+      const actual = parameters();
+      expect(actual.user).toBe("explicit"); expect(actual.password).toBe("explicit-secret"); expect(actual.port).toBe(5544);
+      expect(actual.statement_timeout).toBe(2500); expect(actual.query_timeout).toBe(2500);
+    } finally { await db.close(); }
+    captured.options = undefined;
+    expect(() => createDatabase(`${outerUrl}?${option}=${encodeURIComponent(nestedUrl)}`)).toThrowError(new Error("DATABASE_URL is invalid"));
+    expect(captured.options).toBeUndefined();
+  });
   it("rejects missing root wiring without consulting DATABASE_URL", async () => {
     vi.stubEnv("DATABASE_URL", "postgresql://ambient:secret@ambient.example/unowned");
     await expect(unconfiguredDatabase.query("SELECT 1")).rejects.toThrow("Database dependency is required");

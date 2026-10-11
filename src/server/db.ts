@@ -19,6 +19,8 @@ export function createDatabase(databaseUrl: string): Database {
   let config: pg.ClientConfig;
   try {
     const parsed = parse(databaseUrl);
+    // pg reparses this reserved option after applying explicit defaults/timeouts.
+    if (Object.hasOwn(parsed, "connectionString")) throw new Error();
     // toClientConfig drops string SSL settings; normalize pg's explicit alias
     // before conversion so a URL requesting TLS cannot silently disable it.
     if (parsed.ssl === "no-verify") parsed.ssl = { rejectUnauthorized: false };

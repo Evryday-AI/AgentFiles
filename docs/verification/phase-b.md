@@ -31,7 +31,7 @@ Only newly generated synthetic credentials/bytes and dedicated owned resources w
 | `npm test -- tests/setup/smokeCompose.test.ts` | B4 isolation guard tests passed after expected RED |
 | `docker build -f Dockerfile.setup ...` plus real `docker run --rm -it --network none ...` | Rebuilt final setup source; hidden TTY inputs created new configuration in an owned Desktop bind fixture; Windows host read-access passed; final-prompt cancellation exited1 and created no file |
 | `node scripts/smoke-compose.mjs` | Actual fresh Compose build/install scenarios below passed; owned disposable services/networks/volumes removed |
-| Final `npm test` | 254/254 tests in 17 files passed, zero failures/skips |
+| Final `npm test` | 256/256 tests in 17 files passed after the final database-option regression, zero failures/skips |
 | Final `npm run typecheck` / `npm run build` | Both server/client typechecks and client/server/SQL build exited 0 |
 | `npm run test:integration -- tests/integration/buildContext.test.ts` | Actual Docker context regression: 19 required inputs present, 84 forbidden nested inputs absent |
 | Full and runtime-only `npm audit --json` | Zero reported vulnerabilities; no dependency versions changed after the audit |
@@ -48,6 +48,8 @@ Initial smoke caught harness issues (assuming `db` exists in advanced cleanup, a
 Task review identified nested environment/private/runtime inputs admitted by recursive Docker inclusions. A synthetic Docker context regression reproduced 80 forbidden inputs before the fix; narrowed inclusions and final exclusions removed all 84 forbidden fixtures while preserving 19 required inputs. Runtime and setup rebuilds retained identical image payloads. The controller then independently reran all 254 unit tests, both typechecks, the build, 11 real PostgreSQL tests and the real Docker context regression at `19336e4`; all passed. Normalized local documentation links also passed. Status/evidence edits were separately reviewed and staged-scanned.
 
 The entire 11-file staged B4 diff was inspected. `git diff --cached --check`, the redacted private-identifier check and Gitleaks 8.30.1 staged scan with `--redact=100` passed with zero findings. No reference files were read by the identifier check. Raw scanner reports remain ignored; final release image-layer/archive/history scanning remains Phase E.
+
+Final whole-branch review found that a URL's reserved `connectionString` query option could trigger a second pg parser after the factory pinned credentials, port and timeouts. The factory now rejects that option before Pool construction. Two regressions first failed because plain and percent-encoded option names were accepted; they now verify the fixed value-free error and absence of Pool construction. Real `pg.Client` parsing with synthetic ambient settings also verifies ordinary explicit URLs retain their credentials, port and bounded timeouts without opening a network connection. Fresh covering configuration/database/migration/readiness tests passed 102/102, the complete unit suite passed 256/256, both typechecks and the build passed, and the existing real PostgreSQL suite passed 11/11 through the isolated fixture launcher. Existing TLS behavior remains covered; immutable SQL and dependencies did not change. This source, unit and database evidence is separate from the earlier Compose installation checks.
 
 ## Limits and remaining release work
 
