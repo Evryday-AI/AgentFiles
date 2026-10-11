@@ -78,6 +78,10 @@ class FakeQueryable implements Queryable {
 
   constructor(private readonly responses: Array<unknown[]>) {}
 
+  async withClient<T>(work: (client: Queryable) => Promise<T>): Promise<T> {
+    return work(this);
+  }
+
   async query<T>(text: string, params: readonly unknown[] = []) {
     this.calls.push({ text: text.replace(/\s+/g, " ").trim(), params });
     const rows = (this.responses.shift() ?? []) as T[];
@@ -121,6 +125,20 @@ async function buildTestServer(
   dependencies: Partial<ShareRoutesDependencies> = {},
 ) {
   const server = Fastify({ logger: false });
+  const claim = dependencies.repo?.claimShareDownload;
+  if (claim) {
+    dependencies = {
+      ...dependencies,
+      repo: {
+        ...dependencies.repo,
+        claimShareDownload: async (...args) => {
+          const share = await claim(...args);
+          if (share) await args[3](share);
+          return share;
+        },
+      },
+    };
+  }
   await server.register(registerShareRoutes, {
     config: baseConfig,
     now: () => now,
@@ -307,8 +325,9 @@ describe("share routes", () => {
     expect(resolvePrincipal).not.toHaveBeenCalled();
     expect(claimShareDownload).toHaveBeenCalledWith(
       expect.stringMatching(/^[A-Za-z0-9_-]+$/),
-      now,
+      expect.any(Function),
       undefined,
+      expect.any(Function),
     );
     expect(claimShareDownload.mock.calls[0]?.[0]).not.toBe("public-token");
     expect(openDownloadStream).toHaveBeenCalledWith(
@@ -339,8 +358,11 @@ describe("share routes", () => {
     await server.close();
   });
 
-  it("claims public downloads with one update gated by the active file row", async () => {
-    const client = new FakeQueryable([[downloadClaimRow]]);
+  it("claims under file-first locks, then commits the count before responding", async () => {
+    const client = new FakeQueryable([
+      [], [{ id: downloadClaimRow.file_id }], [{ id: downloadClaimRow.id }],
+      [downloadClaimRow], [],
+    ]);
     const openDownloadStream = vi.fn(async () => Readable.from(["hello"]));
     const server = await buildTestServer({
       db: client,
@@ -354,26 +376,31 @@ describe("share routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.body).toBe("hello");
-    expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.text).toContain("UPDATE share_links");
-    expect(client.calls[0]?.text).toContain(
+    expect(client.calls).toHaveLength(5);
+    expect(client.calls[0]?.text).toBe("BEGIN");
+    expect(client.calls[1]?.text).toContain("FOR UPDATE OF f");
+    expect(client.calls[2]?.text).toContain("FOR UPDATE");
+    expect(client.calls[4]?.text).toBe("COMMIT");
+    expect(client.calls[3]?.text).toContain("UPDATE share_links");
+    expect(client.calls[3]?.text).toContain(
       "JOIN files f ON f.id = updated.file_id",
     );
-    expect(client.calls[0]?.text).toContain("sl.token_hash = $1");
-    expect(client.calls[0]?.text).toContain("sl.revoked_at IS NULL");
-    expect(client.calls[0]?.text).toContain("sl.expires_at > $2");
-    expect(client.calls[0]?.text).toContain(
+    expect(client.calls[3]?.text).toContain("sl.token_hash = $1");
+    expect(client.calls[3]?.text).toContain("sl.revoked_at IS NULL");
+    expect(client.calls[3]?.text).toContain("sl.expires_at > $2");
+    expect(client.calls[3]?.text).toContain(
       "(f.is_durable OR f.expires_at > $2)",
     );
-    expect(client.calls[0]?.text).toContain(
+    expect(client.calls[3]?.text).toContain(
       "(sl.max_downloads IS NULL OR sl.download_count < sl.max_downloads)",
     );
-    expect(client.calls[0]?.text).toContain("f.deleted_at IS NULL");
-    expect(client.calls[0]?.params).toEqual([
+    expect(client.calls[3]?.text).toContain("f.deleted_at IS NULL");
+    expect(client.calls[3]?.params).toEqual([
       expect.stringMatching(/^[A-Za-z0-9_-]+$/),
       now,
+      downloadClaimRow.file_id,
     ]);
-    expect(client.calls[0]?.params[0]).not.toBe("public-token");
+    expect(client.calls[3]?.params[0]).not.toBe("public-token");
     expect(openDownloadStream).toHaveBeenCalledWith(
       baseConfig.storageRoot,
       "F-ABCDE/F-ABCDE.txt",
@@ -383,7 +410,9 @@ describe("share routes", () => {
   });
 
   it("does not stream or increment deleted files rejected at claim time", async () => {
-    const client = new FakeQueryable([[]]);
+    const client = new FakeQueryable([
+      [], [{ id: downloadClaimRow.file_id }], [{ id: downloadClaimRow.id }], [], [],
+    ]);
     const openDownloadStream = vi.fn();
     const server = await buildTestServer({
       db: client,
@@ -396,8 +425,8 @@ describe("share routes", () => {
     });
 
     expect(response.statusCode).toBe(410);
-    expect(client.calls).toHaveLength(1);
-    expect(client.calls[0]?.text).toContain("f.deleted_at IS NULL");
+    expect(client.calls).toHaveLength(5);
+    expect(client.calls[3]?.text).toContain("f.deleted_at IS NULL");
     expect(openDownloadStream).not.toHaveBeenCalled();
 
     await server.close();

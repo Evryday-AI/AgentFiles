@@ -1,6 +1,6 @@
 # Phase C: authorization, capacity and lifecycle evidence (draft)
 
-Dates: initial verification 2026-10-10; C3 review-fix completion 2026-10-11. This draft records the C1/C2 baseline and C3 implementation verification. Controller final review, staged diff inspection and secret/private-identifier scans of the final candidate remain pending. Release checklist boxes remain unchanged. AgentFiles remains in preparation; this is not installable-release, deployment, public HTTPS, native Linux host or phone-access acceptance.
+Dates: initial verification 2026-10-10; C3 and final admission review-fix completion 2026-10-11. This draft records the C1/C2 baseline, C3 implementation and final public-share admission verification. Controller final review, staged diff inspection and secret/private-identifier scans of the final candidate remain pending. Release checklist boxes remain unchanged. AgentFiles remains in preparation; this is not installable-release, deployment, public HTTPS, native Linux host or phone-access acceptance.
 
 ## Executed verification
 
@@ -8,10 +8,10 @@ The host ran Node 24.21.0/npm 11.19.0 on Windows. Real integration tests used an
 
 | Command or check | Observed result |
 | --- | --- |
-| `npm test` | October 10 review-fix run: 358 passed, 2 explicit POSIX skips; 360 tests in 25 files. No source changes followed that run. |
-| `node node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts` through the isolated fixture launcher | October 11 final combined run: 100 passed, 1 Windows symlink skip; 101 tests in 7 files, 75.95 seconds. Includes all C1/C2 and C3 integration cases and the review fixes. |
-| `npm run typecheck` | October 10 review-fix run: server and client typechecks exited 0; source unchanged since. |
-| `npm run build` | October 10 review-fix run: client/server build and SQL copy exited 0; source unchanged since. |
+| `npm test` | October 11 final admission-fix run: 358 passed, 2 explicit POSIX skips; 360 tests in 25 files. |
+| `node node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts` through the isolated fixture launcher | October 11 final admission-fix combined run: 114 passed, 1 Windows symlink skip; 115 tests in 8 files, 74.69 seconds. Includes all C1/C2/C3 integration cases and 14 focused public-share admission cases. |
+| `npm run typecheck` | October 11 final admission-fix run: server and client typechecks exited 0. |
+| `npm run build` | October 11 final admission-fix run: client/server build and SQL copy exited 0. |
 | `node scripts/smoke-compose.mjs` | October 10 pre-review run: ten real Compose scenarios passed; owned disposable services/networks/volumes removed. Review fixes did not change startup/schema/configuration behavior, so this check was not repeated. |
 | Controller Linux container: `node node_modules/vitest/vitest.mjs run --configLoader runner tests/server/storage.test.ts tests/server/storageFailures.test.ts tests/server/uploadAdmission.test.ts tests/server/activeUploads.test.ts tests/server/reconciliation.test.ts` | October 10: 34 passed in 5 files, no skips; nonroot node, read-only image, no network, writable tmpfs. Actual POSIX staging/final directory and file modes and symlink cases executed. Storage/reconciliation helpers remain unchanged by the review fixes; this check was not repeated. |
 | Applied migrations `001`/`002`/`003` compared with reviewed C1/C2 baseline | Unchanged byte-for-byte; only new `004_maintenance.sql` added. Readiness expects version 4 and checksum continuity. |
@@ -42,7 +42,17 @@ The review-fix purge regression creates 501 deleted rows with a retained-byte pr
 
 Expired sessions and old revoked/expired shares are purged while active records remain. Normal, immediately recovered and deferred recovered uploads each attempt one safe creation event. Tests assert one persisted event, idempotent insertion, exact bytes/metadata/capacity and visible health failure under an event-table trigger outage for each path. Event-write failure leaves confirmed upload/deletion successful. Events contain fixed types, IDs and allowlisted details without actor names, credentials or content. Storage status reports measured/reserved bytes and per-job attempt/success/failure state; public endpoints disclose no storage state.
 
-There is no registry purge/reuse setting. Before a stale restore, operators must disable issuance with the validated `FILE_ISSUANCE_ENABLED=false` setting and recover all later code history before re-enabling it. Missing history cannot be inferred from a snapshot. Metadata and event retention each validate 1–3650 days to prevent Date overflow. See [retention and recovery](../retention.md) for volume pairing, missing-byte repair, logs, copies and backup limits.
+There is no registry purge/reuse setting. Before a stale restore, operators must disable issuance with the validated `FILE_ISSUANCE_ENABLED=false` setting and recover all later code history before re-enabling it. Missing history cannot be inferred from a snapshot. Metadata and event retention each validate 1-3650 days to prevent Date overflow. See [retention and recovery](../retention.md) for volume pairing, missing-byte repair, logs, copies and backup limits.
+
+## Final public-share admission review fix
+
+The final review found that a public download could use a timestamp and file snapshot captured before a PostgreSQL wait. Before changing production code, the new `shareAdmission.test.ts` reproduced HTTP 200 after exact/past share expiry and after a committed file deletion claim, where 410 was required. These three failures used independent pinned backend clients and observed `pg_blocking_pids` barriers, without timing sleeps. Revocation and the concurrent cap already passed that initial six-case run.
+
+Admission now locks file first and share second, checks current eligibility and atomically reserves the count using time sampled after pool/row waits, then runs a fresh route guard immediately before storage opening under those locks. Delayed denial rolls back the count and opens no stream. Exact share and file expiry text preserves PostgreSQL microseconds. A successful count commits before sending bytes; locks do not span delivery. Storage-opening failure rolls quota back. Commit failure closes an opened stream and sends no bytes; a count already committed can remain consumed after a lost reply. The [API contract](../api-contract.md) defines that admission point and its limits.
+
+The final focused run passed 14 cases; the final combined run above includes them all. It covers exact/past expiry, revocation, file expiry and deletion claims during actual lock waits; an exhausted ten-client pool wait; share/file expiry after SQL but before opening; eight concurrent requests capped at two successes; microsecond boundaries; storage-open failure; before/after-COMMIT reply failures; and an admitted stream completing after expiry/revocation while the SQL locks are released. Denials assert zero counts and no storage-open calls; lock races also assert final SQL claim/revocation state and retained real fixture bytes. Stream and commit failures use explicit adapters, not process-kill simulations. Existing suites retain actual filesystem download coverage.
+
+The optional upload accounting/test readability finding was also resolved with formatting only, covered by existing unit and real-PG upload tests. The final source change leaves migrations 001–004, startup and configuration behavior unchanged. Earlier Linux/Compose evidence therefore remains applicable within its stated scope; those checks were not repeated. Controller final review/scans and the Phase C gate remain pending.
 
 ## Limits and remaining acceptance
 

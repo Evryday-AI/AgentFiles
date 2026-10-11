@@ -7,6 +7,7 @@ import { buildServer } from "../../src/server/index";
 import { safeLoggerOptions } from "../../src/server/logging";
 import Fastify from "fastify";
 import { testConfig } from "../helpers/config";
+import type pg from "pg";
 const sentinels = [
   "SHARE_TOKEN_SENTINEL",
   "AUTH_SECRET_SENTINEL",
@@ -73,9 +74,8 @@ describe("actual Pino JSON logging", () => {
         ] as T[],
         rowCount: 1,
       }),
-      withClient: async () => {
-        throw new Error(sentinels[5]);
-      },
+      withClient: async <T>(work: (client: pg.PoolClient) => Promise<T>) =>
+        work(db as unknown as pg.PoolClient),
       close: async () => {},
     };
     const server = buildServer(testConfig({ storageRoot }), {

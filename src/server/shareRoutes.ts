@@ -1,4 +1,4 @@
-import { fileIsAvailable } from "./filePolicy.js";
+import { expiryIsAfter, fileIsAvailable, FilePolicyError } from "./filePolicy.js";
 import {
   checkMutationPolicy,
   registerResponsePolicy,
@@ -17,6 +17,7 @@ import type { AppConfig } from "./config.js";
 import { unconfiguredDatabase, type Queryable } from "./db.js";
 import {
   findFileByCode,
+  transaction,
   type FileRecord,
   type UploadedByType,
 } from "./filesRepo.js";
@@ -29,6 +30,7 @@ export interface ShareLinkRecord {
   fileCode?: string;
   tokenHash: string;
   expiresAt: Date;
+  expiresAtExact?: string;
   maxDownloads: number | null;
   downloadCount: number;
   createdByType: UploadedByType;
@@ -59,8 +61,9 @@ interface ShareRepo {
   ): Promise<ShareLinkRecord | null>;
   claimShareDownload(
     tokenHash: string,
-    now: Date,
-    client?: Queryable,
+    now: () => Date,
+    client: Queryable | undefined,
+    admit: (share: ShareLinkRecord) => Promise<void>,
   ): Promise<ShareLinkRecord | null>;
 }
 
@@ -231,21 +234,41 @@ export async function registerShareRoutes(
   server.get<{ Params: { token: string } }>(
     "/s/:token",
     async (request, reply) => {
-      const share = await repo.claimShareDownload(
-        hashShareToken(request.params.token),
-        now(),
-        client,
-      );
-      if (!share?.file || !fileIsAvailable(share.file, now())) {
-        return reply
-          .code(410)
-          .send({ error: "Share link is no longer available" });
+      let stream: (NodeJS.ReadableStream & { destroy?: () => void }) | undefined;
+      let share: ShareLinkRecord | null;
+      try {
+        share = await repo.claimShareDownload(
+          hashShareToken(request.params.token),
+          now,
+          client,
+          async (claimed) => {
+            // This is the transfer admission point. Both rows remain locked;
+            // reject delayed claims before opening storage and roll back quota.
+            const at = now();
+            if (
+              !claimed.file ||
+              claimed.revokedAt !== null ||
+              !expiryIsAfter(claimed, at) ||
+              !fileIsAvailable(claimed.file, at)
+            ) {
+              throw new FilePolicyError(410, "Share link is no longer available");
+            }
+            stream = await storage.openDownloadStream(
+              config.storageRoot,
+              claimed.file.storageKey,
+            );
+          },
+        );
+      } catch (error) {
+        // Opening is bounded work, not delivery. Never send bytes before COMMIT;
+        // a failed/ambiguous commit closes the unused stream and fails closed.
+        stream?.destroy?.();
+        throw error;
       }
-
-      const stream = await storage.openDownloadStream(
-        config.storageRoot,
-        share.file.storageKey,
-      );
+      if (!share?.file || !stream) {
+        stream?.destroy?.();
+        return reply.code(410).send({ error: "Share link is no longer available" });
+      }
 
       return reply
         .type(safeMimeType(share.file.mimeType))
@@ -373,81 +396,103 @@ async function revokeShareLink(
 
 async function claimShareDownload(
   tokenHash: string,
-  now: Date,
+  now: () => Date,
   client: Queryable = db,
+  admit: (share: ShareLinkRecord) => Promise<void>,
 ): Promise<ShareLinkRecord | null> {
-  const result = await client.query<ShareLinkDownloadRow>(
-    `
-      WITH updated AS (
-        UPDATE share_links sl
-        SET download_count = sl.download_count + 1
-        WHERE sl.token_hash = $1
-          AND sl.revoked_at IS NULL
-          AND sl.expires_at > $2
-          AND (sl.max_downloads IS NULL OR sl.download_count < sl.max_downloads)
-          AND EXISTS (
-            SELECT 1
-            FROM files f
-            WHERE f.id = sl.file_id
-              AND f.lifecycle_state = 'active' AND f.deleted_at IS NULL
-              AND (f.is_durable OR f.expires_at > $2)
-          )
-        RETURNING
-          sl.id,
-          sl.file_id,
-          sl.token_hash,
-          sl.expires_at,
-          sl.max_downloads,
-          sl.download_count,
-          sl.created_by_type,
-          sl.created_by_name,
-          sl.created_at,
-          sl.revoked_at
-      )
-      SELECT
-        updated.id,
-        updated.file_id,
-        f.code AS file_code,
-        updated.token_hash,
-        updated.expires_at,
-        updated.max_downloads,
-        updated.download_count,
-        updated.created_by_type,
-        updated.created_by_name,
-        updated.created_at,
-        updated.revoked_at,
-        f.id AS download_file_id,
-        f.code AS download_file_code,
-        f.original_name AS download_original_name,
-        f.storage_key AS download_storage_key,
-        f.mime_type AS download_mime_type,
-        f.size_bytes AS download_size_bytes,
-        f.uploaded_by_type AS download_uploaded_by_type,
-        f.uploaded_by_name AS download_uploaded_by_name,
-        f.created_at AS download_created_at,
-        f.updated_at AS download_updated_at,
-        f.expires_at AS download_expires_at,
-        f.expires_at::text AS download_expires_at_exact,
-        f.is_durable AS download_is_durable,
-        f.deleted_at AS download_deleted_at,
-        f.deleted_reason AS download_deleted_reason,
-        f.lifecycle_state AS download_lifecycle_state,
-        f.sha256 AS download_sha256,
-        f.thumbnail_key AS download_thumbnail_key,
-        f.metadata AS download_metadata
-      FROM updated
-      JOIN files f ON f.id = updated.file_id
-      WHERE f.lifecycle_state = 'active' AND f.deleted_at IS NULL
-        AND (f.is_durable OR f.expires_at > $2)
-      LIMIT 1
-    `,
-    [tokenHash, now],
-  );
+  return transaction(client, async (pinned) => {
+    // File first, then share: the same order as deletion/detail purge. The
+    // lookup is only an identity hint; eligibility is read after both locks.
+    const file = await pinned.query<{ id: string }>(
+      `SELECT f.id FROM files f
+       WHERE f.id = (SELECT file_id FROM share_links WHERE token_hash=$1)
+       FOR UPDATE OF f`,
+      [tokenHash],
+    );
+    if (!file.rows[0]) return null;
+    const share = await pinned.query<{ id: string }>(
+      "SELECT id FROM share_links WHERE token_hash=$1 AND file_id=$2 FOR UPDATE",
+      [tokenHash, file.rows[0].id],
+    );
+    if (!share.rows[0]) return null;
+    // Sample only after pool and row-lock waits. A new statement sees the
+    // current locked rows and SQL preserves submillisecond expiry precision.
+    const result = await pinned.query<ShareLinkDownloadRow>(
+      `
+        WITH updated AS (
+          UPDATE share_links sl
+          SET download_count = sl.download_count + 1
+          WHERE sl.token_hash = $1
+            AND sl.revoked_at IS NULL
+            AND sl.file_id = $3
+            AND sl.expires_at > $2
+            AND (sl.max_downloads IS NULL OR sl.download_count < sl.max_downloads)
+            AND EXISTS (
+              SELECT 1
+              FROM files f
+              WHERE f.id = sl.file_id
+                AND f.lifecycle_state = 'active' AND f.deleted_at IS NULL
+                AND (f.is_durable OR f.expires_at > $2)
+            )
+          RETURNING
+            sl.id,
+            sl.file_id,
+            sl.token_hash,
+            sl.expires_at,
+            sl.max_downloads,
+            sl.download_count,
+            sl.created_by_type,
+            sl.created_by_name,
+            sl.created_at,
+            sl.revoked_at
+        )
+        SELECT
+          updated.id,
+          updated.file_id,
+          f.code AS file_code,
+          updated.token_hash,
+          updated.expires_at,
+          updated.expires_at::text AS expires_at_exact,
+          updated.max_downloads,
+          updated.download_count,
+          updated.created_by_type,
+          updated.created_by_name,
+          updated.created_at,
+          updated.revoked_at,
+          f.id AS download_file_id,
+          f.code AS download_file_code,
+          f.original_name AS download_original_name,
+          f.storage_key AS download_storage_key,
+          f.mime_type AS download_mime_type,
+          f.size_bytes AS download_size_bytes,
+          f.uploaded_by_type AS download_uploaded_by_type,
+          f.uploaded_by_name AS download_uploaded_by_name,
+          f.created_at AS download_created_at,
+          f.updated_at AS download_updated_at,
+          f.expires_at AS download_expires_at,
+          f.expires_at::text AS download_expires_at_exact,
+          f.is_durable AS download_is_durable,
+          f.deleted_at AS download_deleted_at,
+          f.deleted_reason AS download_deleted_reason,
+          f.lifecycle_state AS download_lifecycle_state,
+          f.sha256 AS download_sha256,
+          f.thumbnail_key AS download_thumbnail_key,
+          f.metadata AS download_metadata
+        FROM updated
+        JOIN files f ON f.id = updated.file_id
+        WHERE f.lifecycle_state = 'active' AND f.deleted_at IS NULL
+          AND (f.is_durable OR f.expires_at > $2)
+        LIMIT 1
+      `,
+      [tokenHash, now(), file.rows[0].id],
+    );
 
-  const row = result.rows[0];
-  return row
-    ? { ...mapShareLinkRow(row), file: mapDownloadFileRow(row) }
-    : null;
+    const row = result.rows[0];
+    if (!row) return null;
+    const claimed = { ...mapShareLinkRow(row), file: mapDownloadFileRow(row) };
+    await admit(claimed);
+    return claimed;
+  });
 }
 
 function publicShareLink(
@@ -478,6 +523,7 @@ interface ShareLinkRow {
   file_code?: string;
   token_hash: string;
   expires_at: Date | string;
+  expires_at_exact?: string;
   max_downloads: number | string | null;
   download_count: number | string;
   created_by_type: UploadedByType;
@@ -528,6 +574,7 @@ function mapShareLinkRow(row: ShareLinkRow): ShareLinkRecord {
     fileCode: row.file_code,
     tokenHash: row.token_hash,
     expiresAt: mapDate(row.expires_at),
+    expiresAtExact: row.expires_at_exact,
     maxDownloads: row.max_downloads === null ? null : Number(row.max_downloads),
     downloadCount: Number(row.download_count),
     createdByType: row.created_by_type,

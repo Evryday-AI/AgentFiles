@@ -91,38 +91,70 @@ describe("bounded upload with real PostgreSQL and disk", () => {
       expect(response.statusCode).toBe(507);expect(response.json().code).toBe("STORAGE_CAPACITY_EXCEEDED");expect(await getStorageUsage(f.storageRoot)).toEqual({bytes:7});
     }finally{await restarted?.close();await f.close();}
   });
-  it("stores hostile filename/MIME as inert metadata and downloads only as an attachment",async()=>{
-    const f=await createIntegrationFixture(limits);
-    try{
-      const key=await f.createSyntheticKey(["can_upload","can_download"]),body=syntheticMultipart("hello");
-      body.payload=Buffer.from(body.payload.toString().replace('filename="synthetic.txt"','filename="../../hostile.SVG"').replace("Content-Type: text/plain","Content-Type: text/html; invalid=unsafe"));
-      const response=await f.server.inject({method:"POST",url:"/api/files",headers:{...key.headers,...body.headers},payload:body.payload});expect(response.statusCode).toBe(201);
-      const record=response.json();const download=await f.server.inject({method:"GET",url:`/api/files/${record.code}/download`,headers:key.headers});
-      expect(download.headers["content-disposition"]).toMatch(/^attachment;/);expect(download.body).toBe("hello");
-      const rows=await f.db.query<{storage_key:string}>("SELECT storage_key FROM files");expect(rows.rows[0].storage_key).toMatch(/^files\/[a-f0-9-]{36}\.svg$/);
-    }finally{await f.close();}
-  });
-  it.each(["abort","idle","lying-length"])("cleans incomplete real network upload: %s",async kind=>{
-    const f=await createIntegrationFixture({...limits,maxUploadBytes:100},{files:{uploadIdleTimeoutMs:150}});
-    try{
-      const key=await f.createSyntheticKey(["can_upload"]), body=syntheticMultipart("hello");
-      await f.server.listen({host:"127.0.0.1",port:0});
-      const address=f.server.server.address();if(!address||typeof address==="string")throw new Error();
-      const status=await new Promise<number|undefined>((resolve,reject)=>{
-        const req=httpRequest({host:"127.0.0.1",port:address.port,path:"/api/files",method:"POST",headers:{...key.headers,...body.headers,...(kind==="lying-length"?{"content-length":body.payload.length-10}:{})}},res=>{
-          res.resume();res.on("end",()=>resolve(res.statusCode));
-        });
-        req.on("error",error=>kind==="abort"?resolve(undefined):reject(error));
-        if(kind==="lying-length") {req.end(body.payload);return;}
-        req.write(body.payload.subarray(0,body.payload.indexOf(Buffer.from("hello"))+3));
-        if(kind==="abort")setTimeout(()=>req.destroy(),50);
+  it("stores hostile filename/MIME as inert metadata and downloads only as an attachment", async () => {
+    const f = await createIntegrationFixture(limits);
+    try {
+      const key = await f.createSyntheticKey(["can_upload", "can_download"]);
+      const body = syntheticMultipart("hello");
+      body.payload = Buffer.from(body.payload.toString()
+        .replace('filename="synthetic.txt"', 'filename="../../hostile.SVG"')
+        .replace("Content-Type: text/plain", "Content-Type: text/html; invalid=unsafe"));
+      const response = await f.server.inject({
+        method: "POST", url: "/api/files",
+        headers: { ...key.headers, ...body.headers }, payload: body.payload,
       });
-      if(kind==="idle")expect(status).toBe(408);
-      if(kind==="lying-length")expect(status).toBe(400);
+      expect(response.statusCode).toBe(201);
+      const record = response.json();
+      const download = await f.server.inject({
+        method: "GET", url: `/api/files/${record.code}/download`, headers: key.headers,
+      });
+      expect(download.headers["content-disposition"]).toMatch(/^attachment;/);
+      expect(download.body).toBe("hello");
+      const rows = await f.db.query<{ storage_key: string }>("SELECT storage_key FROM files");
+      expect(rows.rows[0].storage_key).toMatch(/^files\/[a-f0-9-]{36}\.svg$/);
+    } finally {
+      await f.close();
+    }
+  });
+  it.each(["abort", "idle", "lying-length"])("cleans incomplete real network upload: %s", async kind => {
+    const f = await createIntegrationFixture(
+      { ...limits, maxUploadBytes: 100 }, { files: { uploadIdleTimeoutMs: 150 } },
+    );
+    try {
+      const key = await f.createSyntheticKey(["can_upload"]);
+      const body = syntheticMultipart("hello");
+      await f.server.listen({ host: "127.0.0.1", port: 0 });
+      const address = f.server.server.address();
+      if (!address || typeof address === "string") throw new Error();
+      const status = await new Promise<number | undefined>((resolve, reject) => {
+        const req = httpRequest({
+          host: "127.0.0.1", port: address.port, path: "/api/files", method: "POST",
+          headers: {
+            ...key.headers, ...body.headers,
+            ...(kind === "lying-length" ? { "content-length": body.payload.length - 10 } : {}),
+          },
+        }, res => {
+          res.resume();
+          res.on("end", () => resolve(res.statusCode));
+        });
+        req.on("error", error => kind === "abort" ? resolve(undefined) : reject(error));
+        if (kind === "lying-length") {
+          req.end(body.payload);
+          return;
+        }
+        req.write(body.payload.subarray(0, body.payload.indexOf(Buffer.from("hello")) + 3));
+        if (kind === "abort") setTimeout(() => req.destroy(), 50);
+      });
+      if (kind === "idle") expect(status).toBe(408);
+      if (kind === "lying-length") expect(status).toBe(400);
       // Abort has no HTTP response; await release of the server's actual lease.
-      for(let n=0;n<100&&runtime(f).admission.snapshot().active;n++)await new Promise(r=>setTimeout(r,10));
+      for (let n = 0; n < 100 && runtime(f).admission.snapshot().active; n++) {
+        await new Promise(r => setTimeout(r, 10));
+      }
       await empty(f);
-    }finally{await f.close();}
+    } finally {
+      await f.close();
+    }
   });
   it.each([9,10,11])("uses real chunked HTTP and exact file cap %i", async size => {
     const f = await createIntegrationFixture(limits);
