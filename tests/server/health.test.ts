@@ -1,6 +1,7 @@
+import { EventEmitter } from "node:events";
 import { startCleanupExpiredFilesJob } from "../../src/server/cleanup";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildServer, shutdownServer, validateStorageRoot } from "../../src/server/index";
+import { buildServer, registerShutdownSignals, shutdownServer, validateStorageRoot } from "../../src/server/index";
 import { checkReadiness, READINESS_TIMEOUT_MS } from "../../src/server/health";
 import { loadMigrations } from "../../src/server/migrate";
 import type { Database, Queryable } from "../../src/server/db";
@@ -99,5 +100,36 @@ describe("startup storage and shutdown", () => {
     const result = shutdownServer({ close: async () => {} } as never, { close: () => new Promise(() => {}) } as never, 100);
     await vi.advanceTimersByTimeAsync(100);
     expect(await result).toBe(false);
+  });
+});
+
+describe("actual shutdown signal wrapper", () => {
+  it.each(["SIGINT", "SIGTERM"] as const)("drains %s once before exiting successfully", async signal => {
+    vi.useFakeTimers(); const order: string[] = []; let finish!: () => void;
+    const lifecycle = Object.assign(new EventEmitter(), { exit: vi.fn((code: number) => { order.push(`exit:${code}`); }) });
+    const server = { close: vi.fn(() => new Promise<void>(resolve => { finish = () => { order.push("cleanup"); resolve(); }; })) };
+    const db = { close: vi.fn(async () => { order.push("database"); }) };
+    registerShutdownSignals(server as never, db, lifecycle);
+    lifecycle.emit(signal); lifecycle.emit(signal === "SIGINT" ? "SIGTERM" : "SIGINT");
+    expect(server.close).toHaveBeenCalledTimes(1); expect(order).toEqual([]);
+    finish(); await vi.advanceTimersByTimeAsync(0);
+    expect(order).toEqual(["cleanup", "database", "exit:0"]);
+    expect(lifecycle.exit).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(lifecycle.exit).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["SIGINT", "SIGTERM"] as const)("attempts DB close before the %s hard exit when both operations hang", async signal => {
+    vi.useFakeTimers(); const order: string[] = [];
+    const lifecycle = Object.assign(new EventEmitter(), { exit: vi.fn((code: number) => { order.push(`exit:${code}`); }) });
+    const server = { close: () => new Promise<void>(() => {}) };
+    const db = { close: () => { order.push("database"); return new Promise<void>(() => {}); } };
+    registerShutdownSignals(server as never, db, lifecycle);
+    lifecycle.emit(signal);
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(order).toEqual(["database"]);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(order).toEqual(["database", "exit:1"]);
+    expect(lifecycle.exit).toHaveBeenCalledTimes(1);
   });
 });

@@ -127,19 +127,45 @@ export async function shutdownServer(
   timeoutMs = SHUTDOWN_TIMEOUT_MS,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  const bounded = async (operation: () => Promise<unknown>) => {
+  // Reserve the final second for DB close, before the signal wrapper hard exit.
+  const serverDeadline = deadline - Math.min(1000, timeoutMs / 10);
+  const bounded = async (operation: () => Promise<unknown>, operationDeadline: number) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
         operation().then(() => true, () => false),
-        new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), Math.max(0, deadline - Date.now())); }),
+        new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), Math.max(0, operationDeadline - Date.now())); }),
       ]);
     } catch { return false; }
     finally { clearTimeout(timer); }
   };
-  const drained = await bounded(() => server.close());
-  const closed = await bounded(() => db.close());
+  const drained = await bounded(() => server.close(), serverDeadline);
+  const closed = await bounded(() => db.close(), deadline);
   return drained && closed;
+}
+
+export function registerShutdownSignals(
+  server: Pick<import("fastify").FastifyInstance, "close">,
+  db: Pick<Database, "close">,
+  lifecycle: { once(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown; exit(code: number): void } = process,
+): void {
+  let stopping = false;
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    let exited = false;
+    const exit = (code: number) => {
+      if (exited) return;
+      exited = true;
+      clearTimeout(forcedExit);
+      lifecycle.exit(code);
+    };
+    // shutdownServer starts DB close before this hard deadline, including hangs.
+    const forcedExit = setTimeout(() => exit(1), SHUTDOWN_TIMEOUT_MS);
+    void shutdownServer(server, db).then(drained => exit(drained ? 0 : 1));
+  };
+  lifecycle.once("SIGINT", stop);
+  lifecycle.once("SIGTERM", stop);
 }
 
 async function start() {
@@ -147,19 +173,7 @@ async function start() {
   await validateStorageRoot(config.storageRoot);
   const db = createDatabase(config.databaseUrl);
   const server = buildServer(config, { db });
-  let stopping = false;
-  const stop = () => {
-    if (stopping) return;
-    stopping = true;
-    // The hard deadline also bounds hooks or transfers that never settle.
-    const forcedExit = setTimeout(() => process.exit(1), SHUTDOWN_TIMEOUT_MS);
-    void shutdownServer(server, db).then(drained => {
-      clearTimeout(forcedExit);
-      process.exit(drained ? 0 : 1);
-    });
-  };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+  registerShutdownSignals(server, db);
   const host = process.argv.includes("--host=0.0.0.0") ? "0.0.0.0" : "127.0.0.1";
   try { await server.listen({ host, port: config.port }); }
   catch { await shutdownServer(server, db); throw new Error("Server startup failed"); }
