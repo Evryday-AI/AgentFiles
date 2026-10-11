@@ -1,6 +1,6 @@
 # Phase B: independent runtime verification
 
-Date: 2026-10-10. Scope: B1–B4. Configuration commits are `9b29d50`/`2cadaa2`, setup `874a78e`/`80c6776`, database/readiness/shutdown `1723c84`/`ac48f74`, and runtime packaging/build-context protection `9b2af47`/`19336e4`. Each task passed an independent specification and quality review after its fixes. AgentFiles remains in preparation; no release acceptance, production deployment, public HTTPS or phone-access claim is made.
+Date: 2026-10-10. Scope: B1–B4. Configuration commits are `9b29d50`/`2cadaa2`, setup `874a78e`/`80c6776`, database/readiness/shutdown `1723c84`/`ac48f74`, runtime packaging/build-context protection `9b2af47`/`19336e4`, and final database-isolation fix `313888d`. Each task passed an independent specification and quality review after its fixes. AgentFiles remains in preparation; no release acceptance, production deployment, public HTTPS or phone-access claim is made.
 
 ## Platforms and pinned artifacts
 
@@ -50,6 +50,8 @@ Task review identified nested environment/private/runtime inputs admitted by rec
 The entire 11-file staged B4 diff was inspected. `git diff --cached --check`, the redacted private-identifier check and Gitleaks 8.30.1 staged scan with `--redact=100` passed with zero findings. No reference files were read by the identifier check. Raw scanner reports remain ignored; final release image-layer/archive/history scanning remains Phase E.
 
 Final whole-branch review found that a URL's reserved `connectionString` query option could trigger a second pg parser after the factory pinned credentials, port and timeouts. The factory now rejects that option before Pool construction. Two regressions first failed because plain and percent-encoded option names were accepted; they now verify the fixed value-free error and absence of Pool construction. Real `pg.Client` parsing with synthetic ambient settings also verifies ordinary explicit URLs retain their credentials, port and bounded timeouts without opening a network connection. Fresh covering configuration/database/migration/readiness tests passed 102/102, the complete unit suite passed 256/256, both typechecks and the build passed, and the existing real PostgreSQL suite passed 11/11 through the isolated fixture launcher. Existing TLS behavior remains covered; immutable SQL and dependencies did not change. This source, unit and database evidence is separate from the earlier Compose installation checks.
+
+The whole-branch re-review approved `313888d` with no remaining findings. The controller independently reran `npm test` (256/256 passed) and `node scripts/smoke-compose.mjs` against that corrected source. The final Linux amd64 image passed all ten actual installation scenarios described above, including real migration failure, database outage, recreation, signals, storage permissions and the complete external-database alternative. The runner exited 0 after removing its owned disposable services and volumes.
 
 ## Limits and remaining release work
 
