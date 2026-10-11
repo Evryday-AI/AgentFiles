@@ -1,6 +1,6 @@
 # Self-hosting preparation
 
-AgentFiles remains in preparation. Phase B has a verified fresh local installation on Docker Desktop with Linux amd64 containers. Lifecycle hardening has [Phase C evidence](verification/phase-c.md) reviewed locally; agent/browser checks, upgrade/restore and final release acceptance remain pending in the [release checklist](release-checklist.md). These instructions describe the tested installation workflow, not a production-ready release.
+AgentFiles remains in preparation. Phase B has a verified fresh local installation on Docker Desktop with Linux amd64 containers. [Phase C](verification/phase-c.md), [Phase D](verification/phase-d.md) and [Phase E operations](verification/phase-e.md) record lifecycle, browser/agent and local upgrade/restore checks. Physical-phone/reachable HTTPS and final release acceptance remain open in the [release checklist](release-checklist.md). These are tested workflow instructions, not a production-ready release claim.
 
 ## Prerequisites and isolation
 
@@ -79,7 +79,7 @@ Recreate only the app against the existing database and storage:
 docker compose up -d --no-deps --force-recreate app
 ```
 
-Keep the same Compose project name and checkout directory: changing them creates different default volume names. Normal operation and updates must not use `down --volumes` or `down -v`. Stop grace is 15 seconds, exceeding the application's ten-second shutdown deadline. Hard kills can interrupt transfers. Phase C verifies deterministic recovery windows; actual process-kill and power-loss recovery acceptance remains E2.
+Keep the same Compose project name and checkout directory: changing them creates different default volume names. Normal operation and updates must not use `down --volumes` or `down -v`. Stop grace is 15 seconds, exceeding the application's ten-second shutdown deadline. Hard kills can interrupt transfers. E2 externally kills disposable processes at four upload/deletion barriers; abrupt power-loss durability remains unverified. Follow [updates](upgrading.md) and [coordinated backups](backups.md); run a fresh migration job explicitly on every revision update.
 
 ## Isolated installation smoke
 
@@ -88,11 +88,13 @@ With Node 24 installed:
 ```sh
 npm ci
 node scripts/smoke-compose.mjs
+node scripts/smoke-compose.mjs --operations
+node scripts/restore-smoke.mjs
 ```
 
 The runner generates synthetic credentials/configuration in an ignored dedicated scratch directory. It uses unique Compose projects and disposable volumes, strips ambient application/PG/Compose/Docker settings, and never reads the checkout's `.env` or ambient `DATABASE_URL`. It checks first-start gates, authenticated upload/download checksums, DB outage, recreation, Linux signals, POSIX permissions and real migration failure. It also starts the advanced Compose file against its own synthetic database fixture.
 
-The runner removes only its uniquely owned disposable services/networks/volumes and retains bounded sanitized evidence in ignored scratch. Generated image tags and build cache remain local build artifacts. It never prunes other installations. Smoke success is installation evidence; final review and release gates still apply.
+The runner removes only its uniquely owned disposable services/networks/volumes and retains bounded sanitized evidence in ignored scratch. `--operations` adds normal volume-preserving down/recreation, coordinated snapshots, fresh isolated restore, later-code recovery and experimental Phase-B revision upgrade/rollback. The standalone restore-smoke entry point runs this complete suite with no live target arguments. Generated images/build cache remain local artifacts; no generic pruning occurs. Smoke success is local evidence; final review/release gates still apply.
 
 ## Advanced independent database
 
@@ -117,4 +119,4 @@ Allow `MAX_UPLOAD_BYTES` plus multipart headers/fields in the proxy body limit; 
 
 Proxy access/error logs must omit Authorization, cookies and request bodies and scrub bearer tokens in `/s/<token>` paths, including query strings/referrers that could carry links. Restrict log access and retention. App logs use safe route templates and redact secret fields. Configure bounded proxy/container log rotation (recommended maximum 30 days); lifecycle events have separate app-managed retention. See [retention](retention.md). Reachable public HTTPS and actual phone access need separate D2/E2 evidence and were not tested in Phase B.
 
-Storage startup pairs the database and volume through a persistent UUID marker. Preserve `.agentfiles-volume` with all file bytes and the matching database `storage_volume_identity` row. Do not point an existing database at an empty replacement mount: startup refuses this uncertainty. Before any stale-snapshot restore, set `FILE_ISSUANCE_ENABLED=false` and recover the complete issued-code registry, including codes issued after the snapshot. Detailed [recovery boundaries](retention.md) apply; the release backup/restore workflow remains E2.
+Storage startup pairs database and volume through a persistent UUID marker. Preserve `.agentfiles-volume`, all file bytes and the matching `storage_volume_identity` row. An existing database on an empty replacement mount is refused. Before stale-snapshot restore, set `FILE_ISSUANCE_ENABLED=false` and recover every issued-code reservation, including later purged codes. Follow [coordinated recovery](backups.md) and [retention boundaries](retention.md). Local-CA Chromium TLS tests are separate from an actual physical phone on a reachable configured public origin; that gate remains open.

@@ -1,6 +1,6 @@
 # Retention and recovery
 
-AgentFiles supports one app process and an exclusively app-owned storage volume. Phase C evidence covers real PostgreSQL, real synthetic files and deterministic fault injection. Actual process-kill, power-loss and release backup/restore acceptance remain E2.
+AgentFiles supports one app process and an exclusively app-owned storage volume. Phase C covers real PostgreSQL/files and deterministic faults. [Phase E](verification/phase-e.md) adds externally killed disposable processes at four upload/deletion windows and coordinated synthetic backup/restore. This does not establish abrupt power-loss durability or release acceptance.
 
 ## Separate retention boundaries
 
@@ -39,7 +39,7 @@ An initial installation with no issued codes binds one UUID in `storage_volume_i
 
 A nonempty database without an association is not automatically adopted. Keep the app stopped while an operator verifies the complete original storage volume and issuance history, then recovers the matching association from trusted installation evidence. A pre-004 experimental installation has no such evidence: its adoption requires an explicit offline operator review and pairing of the verified original volume, outside the automatic fresh-install workflow. No release upgrade/restore tool is promised by this phase.
 
-Before restoring any snapshot, set `FILE_ISSUANCE_ENABLED=false`. Restore the complete `issued_file_codes` registry, including all codes issued after the snapshot, before setting it true and restarting. The setting is a validated Boolean and returns `503 FILE_ISSUANCE_DISABLED` before accepting upload bytes. The app cannot infer issuance history absent from an old snapshot. If later history cannot be recovered, keep issuance disabled; do not silently reuse earlier identities. The C3 test exports and restores a synthetic complete registry into a fresh migrated database; it is fixture evidence, not the Phase E backup workflow.
+Before restoring any snapshot, set `FILE_ISSUANCE_ENABLED=false`. Recover every `issued_file_codes` reservation, including later issued-and-purged codes, before explicitly enabling current-runtime uploads. The setting returns `503 FILE_ISSUANCE_DISABLED` before accepting bytes. An old snapshot cannot establish absent later history. If complete coverage cannot be established, keep issuance disabled; time/counts/file metadata never prove it. The [coordinated backup/recovery procedure](backups.md) and E2 synthetic stale-snapshot restore supplement C3's lower-level registry checks.
 
 ## Capacity and operator status
 

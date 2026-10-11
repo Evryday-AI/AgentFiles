@@ -18,7 +18,8 @@ describe('Compose smoke isolation', () => {
     expect(clean).toEqual({ PATH: 'tools' });
   });
   it('accepts only the explicit agents option and strips ambient client credentials', () => {
-    expect(runner?.parseSmokeOptions?.(['--agents'])).toEqual({ agents: true });
+    expect(runner?.parseSmokeOptions?.(['--agents'])).toEqual({ agents: true, operations: false });
+    expect(runner?.parseSmokeOptions?.(['--operations'])).toEqual({ agents: false, operations: true });
     expect(() => runner?.parseSmokeOptions?.(['--unknown'])).toThrow();
     expect(runner?.isolatedEnvironment({ PATH: 'tools', AGENTFILES_API_KEY: 'sentinel', AWS_SECRET_ACCESS_KEY: 'sentinel', GITHUB_TOKEN: 'sentinel' })).toEqual({ PATH: 'tools' });
   });

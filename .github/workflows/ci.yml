@@ -49,10 +49,11 @@ jobs:
 
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -170,6 +171,8 @@ jobs:
             await run('integration', ['node_modules/vitest/vitest.mjs', 'run', '--config', 'vitest.integration.config.ts'], testEnv);
             await run('browser', ['scripts/test-browser.mjs', 'tests/browser/handoff.spec.ts'], testEnv);
             await run('compose-agents', ['scripts/smoke-compose.mjs', '--agents'], env, 1200000);
+            await run('compose-operations', ['scripts/smoke-compose.mjs', '--operations'], env, 1200000);
+            await run('restore-smoke', ['scripts/restore-smoke.mjs'], env, 1200000);
           } finally {
             if (created) {
               assert(/^agentfiles-ci-[a-f0-9]{24}$/.test(container));

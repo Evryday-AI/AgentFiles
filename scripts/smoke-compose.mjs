@@ -26,8 +26,8 @@ export function isolatedEnvironment(source) {
 }
 
 export function parseSmokeOptions(args) {
-  if (args.some(arg => arg !== '--agents') || new Set(args).size !== args.length) throw new Error('Unknown or duplicate smoke option');
-  return { agents: args.includes('--agents') };
+  if (args.some(arg => !['--agents', '--operations'].includes(arg)) || new Set(args).size !== args.length) throw new Error('Unknown or duplicate smoke option');
+  return { agents: args.includes('--agents'), operations: args.includes('--operations') };
 }
 
 export function sanitizeDiagnostics(value, secrets = []) {
@@ -39,8 +39,8 @@ export function sanitizeDiagnostics(value, secrets = []) {
   return clean.length > 4096 ? `[bounded]\n${clean.slice(-4086)}` : clean;
 }
 
-async function main() {
-  const options = parseSmokeOptions(process.argv.slice(2));
+export async function runComposeSmoke(args = process.argv.slice(2)) {
+  const options = parseSmokeOptions(args);
   const template = await readFile(resolve(root, 'compose.yaml'), 'utf8');
   const scratch = ownedChild(root, '.private/compose-smoke');
   await mkdir(scratch, { recursive: true });
@@ -158,6 +158,10 @@ async function main() {
     };
     await download();
     record('localhost login cookie, client assets, authenticated upload and SHA-256 download');
+    if (options.operations) {
+      const { runOperationsSmoke } = await import('./operations-compose.mjs');
+      await runOperationsSmoke({ root, main, directory, fixture, command, compose, ownedContainer, inspect, waitReady, bytes, file, cookie, secrets, record, download });
+    }
     if (options.agents) {
       await runAgentSmoke({ root, fixture: main, app, cookie, command, compose, secrets, record });
     }
@@ -223,13 +227,14 @@ async function main() {
     await compose(advanced, ['create', 'migrate']);
     const network = `${advanced.project}_default`;
     assert.equal((await command(['network', 'inspect', '--format', '{{index .Labels "com.docker.compose.project"}}', network])).output.trim(), advanced.project);
-    await command(['network', 'connect', '--alias', 'db', network, db]);
+    const currentDb = await ownedContainer(main, 'db');
+    await command(['network', 'connect', '--alias', 'db', network, currentDb]);
     try {
       await compose(advanced, ['up', '-d']); await waitReady(advanced);
       assert.equal(await inspect(await ownedContainer(advanced, 'migrate'), '{{.State.ExitCode}}'), '0');
       assert.equal((await fetch(`http://127.0.0.1:${advanced.port}/api/health`)).status, 200);
       record('complete external-database Compose starts independently with owned synthetic DB and migration gate');
-    } finally { await command(['network', 'disconnect', network, db]); }
+    } finally { await command(['network', 'disconnect', network, currentDb]); }
   } catch (error) {
     failure = sanitizeDiagnostics(error.message, secrets);
     console.error(failure);
@@ -252,5 +257,5 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch(() => { console.error('Compose smoke failed; see the bounded sanitized diagnostics in the owned scratch run.'); process.exitCode = 1; });
+  runComposeSmoke().catch(() => { console.error('Compose smoke failed; see the bounded sanitized diagnostics in the owned scratch run.'); process.exitCode = 1; });
 }
