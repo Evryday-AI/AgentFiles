@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FileItem, getFile, getSession, listFiles, login, logout, Principal } from "./api";
+import {
+  FileItem,
+  fileError,
+  getFile,
+  getInstance,
+  InstanceInfo,
+  getSession,
+  listFiles,
+  login,
+  logout,
+  Principal,
+} from "./api";
+import { CodeLookup } from "./components/CodeLookup";
 import { FileDetail } from "./components/FileDetail";
 import { GalleryView } from "./components/GalleryView";
 import { ListView } from "./components/ListView";
@@ -11,6 +23,9 @@ type Tab = "gallery" | "list" | "settings";
 
 export function App() {
   const [principal, setPrincipal] = useState<Principal | null>(null);
+  const [instance, setInstance] = useState<InstanceInfo | null>(null);
+  const sessionGeneration = useRef(0);
+  const selectionGeneration = useRef(0);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -21,17 +36,30 @@ export function App() {
   const [activeTab, setActiveTab] = useState<Tab>("gallery");
   const [search, setSearch] = useState("");
   const [fileType, setFileType] = useState("all");
-  const [compact, setCompact] = useState(() => window.matchMedia("(max-width: 1099px)").matches);
+  const renderSession = sessionGeneration.current;
+  const [compact, setCompact] = useState(
+    () => window.matchMedia("(max-width: 1099px)").matches,
+  );
   useEffect(() => {
     const query = window.matchMedia("(max-width: 1099px)");
     const update = () => setCompact(query.matches);
     query.addEventListener("change", update);
     return () => query.removeEventListener("change", update);
   }, []);
-  const visibleFiles = useMemo(() => files.filter((file) =>
-    `${file.name} ${file.code}`.toLowerCase().includes(search.trim().toLowerCase()) &&
-    (fileType === "all" || (fileType === "durable" ? file.durable : file.mime_type.startsWith(`${fileType}/`)))
-  ), [files, search, fileType]);
+  const visibleFiles = useMemo(
+    () =>
+      files.filter(
+        (file) =>
+          `${file.name} ${file.code}`
+            .toLowerCase()
+            .includes(search.trim().toLowerCase()) &&
+          (fileType === "all" ||
+            (fileType === "durable"
+              ? file.durable
+              : file.mime_type.startsWith(`${fileType}/`))),
+      ),
+    [files, search, fileType],
+  );
   const initialCode = initialFileCodeFromPath();
   const [selectedCode, setSelectedCode] = useState<string | null>(initialCode);
   const selectedCodeRef = useRef<string | null>(initialCode);
@@ -41,11 +69,18 @@ export function App() {
     () => files.find((file) => file.code === selectedCode) ?? null,
     [files, selectedCode],
   );
-  const totalBytes = files.reduce((total, file) => total + (file.size_bytes ?? file.size), 0);
-  const showInitialFilesLoading = activeTab !== "settings" && filesLoading && files.length === 0;
+  const totalBytes = files.reduce(
+    (total, file) => total + (file.size_bytes ?? file.size),
+    0,
+  );
+  const showInitialFilesLoading =
+    activeTab !== "settings" && filesLoading && files.length === 0;
 
   useEffect(() => {
     void loadSession();
+    void getInstance()
+      .then(setInstance)
+      .catch(() => setError("Instance policy unavailable"));
 
     return () => {
       if (noticeTimeoutRef.current !== null) {
@@ -87,6 +122,8 @@ export function App() {
   }
 
   async function handleLogout() {
+    sessionGeneration.current++;
+    setActiveTab("gallery");
     try {
       await logout();
       setPrincipal(null);
@@ -98,15 +135,20 @@ export function App() {
   }
 
   async function refreshFiles(options: { adjustSelection?: boolean } = {}) {
+    const generation = sessionGeneration.current;
     setFilesLoading(true);
     setError(null);
     try {
       const current = selectedCodeRef.current;
       const listedFiles = await listFiles();
-      const nextFiles =
-        current && !listedFiles.some((file) => file.code === current)
-          ? await prependSelectedFile(listedFiles, current)
-          : listedFiles;
+      const nextFiles = current
+        ? await prependSelectedFile(listedFiles, current)
+        : listedFiles;
+      if (
+        generation !== sessionGeneration.current ||
+        current !== selectedCodeRef.current
+      )
+        return;
       setFiles(nextFiles);
       if (options.adjustSelection ?? true) {
         updateSelectedCode((selected) =>
@@ -116,17 +158,29 @@ export function App() {
         );
       }
     } catch (error) {
-      setError(error instanceof Error ? error.message : "File refresh failed");
+      if (generation === sessionGeneration.current) setError(fileError(error));
     } finally {
       setFilesLoading(false);
     }
   }
 
-  async function prependSelectedFile(listedFiles: FileItem[], code: string): Promise<FileItem[]> {
+  async function prependSelectedFile(
+    listedFiles: FileItem[],
+    code: string,
+  ): Promise<FileItem[]> {
     try {
       const selected = await getFile(code);
-      return [selected, ...listedFiles.filter((file) => file.code !== selected.code)];
-    } catch {
+      if (listedFiles.some((file) => file.code === code)) {
+        return listedFiles.map((file) =>
+          file.code === code ? selected : file,
+        );
+      }
+      return [
+        selected,
+        ...listedFiles.filter((file) => file.code !== selected.code),
+      ];
+    } catch (error) {
+      if (selectedCodeRef.current === code) setError(fileError(error));
       return listedFiles;
     }
   }
@@ -155,22 +209,69 @@ export function App() {
   }
 
   function handleUploaded(uploaded: FileItem[]) {
-    void refreshFiles();
+    setFiles((current) => [
+      ...uploaded,
+      ...current.filter(
+        (file) => !uploaded.some((result) => result.code === file.code),
+      ),
+    ]);
     updateSelectedCode(uploaded[0]?.code ?? selectedCodeRef.current);
-    flash(uploaded.length === 1 ? `${uploaded[0]?.code} uploaded` : `${uploaded.length} files uploaded`);
+    void refreshFiles();
+    flash(
+      uploaded.length === 1
+        ? `${uploaded[0]?.code} uploaded`
+        : `${uploaded.length} files uploaded`,
+    );
   }
 
-  function updateSelectedCode(next: string | null | ((current: string | null) => string | null)) {
-    const resolved = typeof next === "function" ? next(selectedCodeRef.current) : next;
+  function updateSelectedCode(
+    next: string | null | ((current: string | null) => string | null),
+  ) {
+    selectionGeneration.current++;
+    const resolved =
+      typeof next === "function" ? next(selectedCodeRef.current) : next;
     selectedCodeRef.current = resolved;
     setSelectedCode(resolved);
+  }
+
+  async function lookup(code: string) {
+    updateSelectedCode(code);
+    const selection = selectionGeneration.current;
+    const session = sessionGeneration.current;
+    setError(null);
+    try {
+      const file = await getFile(code);
+      if (
+        selection !== selectionGeneration.current ||
+        session !== sessionGeneration.current
+      )
+        return;
+      setFiles((items) =>
+        items.some((item) => item.code === code)
+          ? items.map((item) => (item.code === code ? file : item))
+          : [file, ...items],
+      );
+      setSearch("");
+      setFileType("all");
+    } catch (error) {
+      if (
+        selection !== selectionGeneration.current ||
+        session !== sessionGeneration.current
+      )
+        return;
+      setError(fileError(error));
+      updateSelectedCode(null);
+      setFiles((items) => items.filter((item) => item.code !== code));
+    }
   }
 
   function handleFileMutation(actedCode: string, file: FileItem | null) {
     const actionStillSelected = selectedCodeRef.current === actedCode;
 
     if (file) {
-      setFiles((current) => current.map((item) => (item.code === actedCode ? file : item)));
+      setFiles((current) =>
+        current.map((item) => (item.code === actedCode ? file : item)),
+      );
       if (actionStillSelected) {
         updateSelectedCode(file.code);
       }
@@ -192,7 +293,9 @@ export function App() {
   }
 
   if (!principal) {
-    return <Login error={loginError} loading={loginLoading} onLogin={handleLogin} />;
+    return (
+      <Login error={loginError} loading={loginLoading} onLogin={handleLogin} />
+    );
   }
 
   const selectedInlineDetail =
@@ -203,7 +306,14 @@ export function App() {
         onClose={() => updateSelectedCode(null)}
         onCopy={copyValue}
         onError={setError}
-        onMutated={handleFileMutation}
+        onMutated={(code, file) => {
+          if (renderSession === sessionGeneration.current)
+            handleFileMutation(code, file);
+        }}
+        canPersist={
+          !!instance?.allow_persistent_files &&
+          (principal.type === "admin" || principal.canMarkDurable)
+        }
       />
     ) : null;
   const selectedDesktopDetail =
@@ -214,7 +324,14 @@ export function App() {
         onClose={() => updateSelectedCode(null)}
         onCopy={copyValue}
         onError={setError}
-        onMutated={handleFileMutation}
+        onMutated={(code, file) => {
+          if (renderSession === sessionGeneration.current)
+            handleFileMutation(code, file);
+        }}
+        canPersist={
+          !!instance?.allow_persistent_files &&
+          (principal.type === "admin" || principal.canMarkDurable)
+        }
       />
     ) : null;
 
@@ -234,7 +351,18 @@ export function App() {
       </header>
 
       <div hidden={activeTab === "settings"}>
-        <UploadPanel onError={setError} onUploaded={handleUploaded} />
+        <UploadPanel
+          canPersist={
+            !!instance?.allow_persistent_files &&
+            (principal.type === "admin" || principal.canMarkDurable)
+          }
+          onCopy={copyValue}
+          onError={setError}
+          onUploaded={(files) => {
+            if (renderSession === sessionGeneration.current)
+              handleUploaded(files);
+          }}
+        />
       </div>
 
       <nav className="tabs" aria-label="Primary views">
@@ -259,50 +387,119 @@ export function App() {
           </button>
         </div>
       ) : null}
-      {notice ? <div className="notice success" role="status">{notice}</div> : null}
+      {notice ? (
+        <div className="notice success" role="status">
+          {notice}
+        </div>
+      ) : null}
 
-      <div className={`workbench ${selectedDesktopDetail ? "has-selection" : ""}`}>
+      <div
+        className={`workbench ${selectedDesktopDetail ? "has-selection" : ""}`}
+      >
         <section className="main-pane">
           <div className="pane-head">
-            <div className="library-heading"><h2>{activeTab === "settings" ? "Settings" : "Files"}</h2>
-              {activeTab !== "settings" ? <span>{files.length} files · {formatBytes(totalBytes)} · {files.filter((file) => file.durable).length} kept</span> : null}
+            <div className="library-heading">
+              <h2>{activeTab === "settings" ? "Settings" : "Files"}</h2>
+              {activeTab !== "settings" ? (
+                <span>
+                  {files.length} files · {formatBytes(totalBytes)} ·{" "}
+                  {files.filter((file) => file.durable).length} kept
+                </span>
+              ) : null}
             </div>
             {activeTab !== "settings" ? (
-              <button disabled={filesLoading} type="button" onClick={() => void refreshFiles()}>
+              <button
+                disabled={filesLoading}
+                type="button"
+                onClick={() => void refreshFiles()}
+              >
                 {filesLoading ? "Refreshing..." : "Refresh"}
               </button>
             ) : null}
           </div>
-          {activeTab !== "settings" ? <div className="library-tools">
-            <label className="search-field"><span className="sr-only">Search files</span><input type="search" placeholder="Search by filename or code" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
-            <label className="filter-field"><span className="sr-only">Filter files</span><select value={fileType} onChange={(event) => setFileType(event.target.value)}>
-              <option value="all">All files</option><option value="video">Videos</option><option value="image">Images</option><option value="audio">Audio</option><option value="durable">Kept files</option>
-            </select></label>
-            {search || fileType !== "all" ? <button type="button" onClick={() => { setSearch(""); setFileType("all"); }}>Clear filters</button> : null}
-          </div> : null}
-          {!showInitialFilesLoading && files.length > 0 && visibleFiles.length === 0 && activeTab !== "settings" ? <div className="empty-state"><h3>No matching files</h3><p>Try another filename or clear the filters.</p></div> : null}
-          {showInitialFilesLoading ? <div className="empty-state">Loading files…</div> : null}
-          {!showInitialFilesLoading && (visibleFiles.length > 0 || files.length === 0) && activeTab === "gallery" ? (
+          {activeTab !== "settings" ? (
+            <div className="library-tools">
+              <label className="search-field">
+                <span className="sr-only">Filter listed files</span>
+                <input
+                  type="search"
+                  placeholder="Filter listed filenames or codes"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+              </label>
+              <label className="filter-field">
+                <span className="sr-only">Filter files</span>
+                <select
+                  value={fileType}
+                  onChange={(event) => setFileType(event.target.value)}
+                >
+                  <option value="all">All files</option>
+                  <option value="video">Videos</option>
+                  <option value="image">Images</option>
+                  <option value="audio">Audio</option>
+                  <option value="durable">Kept files</option>
+                </select>
+              </label>
+              {search || fileType !== "all" ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearch("");
+                    setFileType("all");
+                  }}
+                >
+                  Clear filters
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          {activeTab !== "settings" ? <CodeLookup onLookup={lookup} /> : null}
+          {!showInitialFilesLoading &&
+          files.length > 0 &&
+          visibleFiles.length === 0 &&
+          activeTab !== "settings" ? (
+            <div className="empty-state">
+              <h3>No matching files</h3>
+              <p>Try another filename or clear the filters.</p>
+            </div>
+          ) : null}
+          {showInitialFilesLoading ? (
+            <div className="empty-state">Loading files…</div>
+          ) : null}
+          {!showInitialFilesLoading &&
+          (visibleFiles.length > 0 || files.length === 0) &&
+          activeTab === "gallery" ? (
             <GalleryView
               files={visibleFiles}
               selectedCode={selectedCode}
               selectedDetail={selectedInlineDetail}
               onCopy={copyValue}
-              onSelect={(file) => updateSelectedCode(file.code)}
+              onSelect={(file) => void lookup(file.code)}
             />
           ) : null}
-          {!showInitialFilesLoading && (visibleFiles.length > 0 || files.length === 0) && activeTab === "list" ? (
+          {!showInitialFilesLoading &&
+          (visibleFiles.length > 0 || files.length === 0) &&
+          activeTab === "list" ? (
             <ListView
               files={visibleFiles}
               selectedCode={selectedCode}
               selectedDetail={selectedInlineDetail}
               onCopy={copyValue}
-              onSelect={(file) => updateSelectedCode(file.code)}
+              onSelect={(file) => void lookup(file.code)}
             />
           ) : null}
-          {activeTab === "settings" ? <Settings principal={principal} onCopy={copyValue} /> : null}
+          {activeTab === "settings" ? (
+            <Settings
+              instance={instance}
+              principal={principal}
+              onCopy={copyValue}
+            />
+          ) : null}
         </section>
-        {selectedDesktopDetail ? <div className="desktop-detail">{selectedDesktopDetail}</div> : null}
+        {selectedDesktopDetail ? (
+          <div className="desktop-detail">{selectedDesktopDetail}</div>
+        ) : null}
       </div>
     </main>
   );

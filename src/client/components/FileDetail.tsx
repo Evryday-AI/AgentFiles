@@ -1,7 +1,8 @@
 import { MediaPreview } from "./MediaPreview";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import {
-  absoluteDownloadUrl,
+  getFile,
+  fileError,
   createShareLink,
   deleteFile,
   downloadUrl,
@@ -14,12 +15,20 @@ import {
 interface FileDetailProps {
   file: FileItem | null;
   onClose: () => void;
+  canPersist: boolean;
   onCopy: (value: string, label: string, sourceCode?: string) => void;
   onError: (message: string) => void;
   onMutated: (actedCode: string, file: FileItem | null) => void;
 }
 
-export function FileDetail({ file, onClose, onCopy, onError, onMutated }: FileDetailProps) {
+export function FileDetail({
+  file,
+  onClose,
+  onCopy,
+  onError,
+  onMutated,
+  canPersist,
+}: FileDetailProps) {
   const previewDialog = useRef<HTMLDialogElement>(null);
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -31,6 +40,8 @@ export function FileDetail({ file, onClose, onCopy, onError, onMutated }: FileDe
   useEffect(() => {
     activeCodeRef.current = file?.code ?? null;
     setShare(null);
+    setExpanded(false);
+    previewDialog.current?.close();
 
     return () => {
       activeCodeRef.current = null;
@@ -39,6 +50,16 @@ export function FileDetail({ file, onClose, onCopy, onError, onMutated }: FileDe
 
   function isActiveFile(code: string) {
     return activeCodeRef.current === code;
+  }
+
+  async function checkAccess(code: string) {
+    try {
+      await getFile(code);
+      return isActiveFile(code);
+    } catch (error) {
+      if (isActiveFile(code)) onError(fileError(error));
+      return false;
+    }
   }
 
   if (!file) {
@@ -58,7 +79,9 @@ export function FileDetail({ file, onClose, onCopy, onError, onMutated }: FileDe
       onMutated(actedCode, updated);
     } catch (error) {
       if (isActiveFile(actedCode)) {
-        onError(error instanceof Error ? error.message : "Durable update failed");
+        onError(
+          error instanceof Error ? error.message : "Durable update failed",
+        );
       }
     } finally {
       if (isActiveFile(actedCode)) {
@@ -95,7 +118,9 @@ export function FileDetail({ file, onClose, onCopy, onError, onMutated }: FileDe
     setBusy(true);
     try {
       const created = await createShareLink(actedCode, {
-        expiresAt: new Date(Date.now() + Number(shareHours) * 60 * 60 * 1000).toISOString(),
+        expiresAt: new Date(
+          Date.now() + Number(shareHours) * 60 * 60 * 1000,
+        ).toISOString(),
         maxDownloads: maxDownloads ? Number(maxDownloads) : null,
       });
       if (isActiveFile(actedCode)) {
@@ -104,7 +129,9 @@ export function FileDetail({ file, onClose, onCopy, onError, onMutated }: FileDe
       }
     } catch (error) {
       if (isActiveFile(actedCode)) {
-        onError(error instanceof Error ? error.message : "Share creation failed");
+        onError(
+          error instanceof Error ? error.message : "Share creation failed",
+        );
       }
     } finally {
       if (isActiveFile(actedCode)) {
@@ -140,23 +167,72 @@ export function FileDetail({ file, onClose, onCopy, onError, onMutated }: FileDe
           <h2>File details</h2>
           <span className="file-code">{file.code}</span>
         </div>
-        <button className="icon-action" aria-label="Close detail" type="button" onClick={onClose}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+        <button
+          className="icon-action"
+          aria-label="Close detail"
+          type="button"
+          onClick={onClose}
+        >
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            aria-hidden="true"
+          >
+            <path d="m6 6 12 12M18 6 6 18" />
+          </svg>
         </button>
       </div>
 
-      {!expanded ? <div className="detail-preview">
-        <MediaPreview key={`${file.code}-${expanded}`} file={file} />
-      </div> : null}
-      {file.mime_type.startsWith("video/") || file.mime_type.startsWith("image/") ? <button className="expand-preview" type="button" onClick={() => { setExpanded(true); previewDialog.current?.showModal(); }}>Open larger preview</button> : null}
-      <dialog ref={previewDialog} className="preview-dialog" aria-label={`Preview ${file.name}`} onClose={() => setExpanded(false)} onClick={(event) => { if (event.target === event.currentTarget) previewDialog.current?.close(); }}>
-        <div className="preview-dialog-head"><h2>{file.name}</h2><button autoFocus type="button" onClick={() => previewDialog.current?.close()}>Close preview</button></div>
+      {!expanded ? (
+        <div className="detail-preview">
+          <MediaPreview key={`${file.code}-${expanded}`} file={file} />
+        </div>
+      ) : null}
+      {file.mime_type.startsWith("video/") ||
+      file.mime_type.startsWith("image/") ? (
+        <button
+          className="expand-preview"
+          type="button"
+          onClick={() => {
+            setExpanded(true);
+            previewDialog.current?.showModal();
+          }}
+        >
+          Open larger preview
+        </button>
+      ) : null}
+      <dialog
+        ref={previewDialog}
+        className="preview-dialog"
+        aria-label={`Preview ${file.name}`}
+        onClose={() => setExpanded(false)}
+        onClick={(event) => {
+          if (event.target === event.currentTarget)
+            previewDialog.current?.close();
+        }}
+      >
+        <div className="preview-dialog-head">
+          <h2>{file.name}</h2>
+          <button
+            autoFocus
+            type="button"
+            onClick={() => previewDialog.current?.close()}
+          >
+            Close preview
+          </button>
+        </div>
         {expanded ? <MediaPreview key={file.code} file={file} /> : null}
       </dialog>
 
       <div className="detail-title">
         <h3>{file.name}</h3>
-        <span className={`status-pill ${file.durable ? "durable" : "expiring"}`}>
+        <span
+          className={`status-pill ${file.durable ? "durable" : "expiring"}`}
+        >
           {file.durable ? "Kept" : "Temporary"}
         </span>
       </div>
@@ -181,17 +257,49 @@ export function FileDetail({ file, onClose, onCopy, onError, onMutated }: FileDe
       </dl>
 
       <div className="action-grid">
-        <button type="button" onClick={() => onCopy(file.code, "Code copied", file.code)}>
+        <button
+          type="button"
+          onClick={() => onCopy(file.code, "Code copied", file.code)}
+        >
           Copy code
         </button>
-        <button type="button" onClick={() => onCopy(absoluteDownloadUrl(file.code), "URL copied", file.code)}>
-          Copy URL
+        <button
+          type="button"
+          onClick={() =>
+            onCopy(file.private_url, "Private link copied", file.code)
+          }
+        >
+          Copy private link
         </button>
-        <a className="button-like primary-action" href={downloadUrl(file.code)}>
+        <a
+          className="button-like primary-action"
+          href={downloadUrl(file.code)}
+          onClick={(event) => {
+            event.preventDefault();
+            void checkAccess(file.code).then((ok) => {
+              if (ok) {
+                const anchor = document.createElement("a");
+                anchor.href = downloadUrl(file.code);
+                anchor.download = file.name;
+                document.body.append(anchor);
+                anchor.click();
+                anchor.remove();
+              }
+            });
+          }}
+        >
           Download
         </a>
-        <button disabled={busy} type="button" onClick={handleDurable}>
-          {file.durable ? "Use auto-expiry" : "Keep indefinitely"}
+        <button
+          disabled={busy || !canPersist}
+          type="button"
+          onClick={handleDurable}
+        >
+          {file.durable
+            ? "Use auto-expiry"
+            : canPersist
+              ? "Keep indefinitely"
+              : "Persistence unavailable"}
         </button>
       </div>
 
@@ -225,7 +333,12 @@ export function FileDetail({ file, onClose, onCopy, onError, onMutated }: FileDe
         </div>
         {share ? (
           <div className="share-result">
-            <button type="button" onClick={() => onCopy(share.public_url, "Share URL copied", file.code)}>
+            <button
+              type="button"
+              onClick={() =>
+                onCopy(share.public_url, "Share URL copied", file.code)
+              }
+            >
               {share.public_url}
             </button>
             <button disabled={busy} type="button" onClick={handleRevokeShare}>
@@ -235,7 +348,12 @@ export function FileDetail({ file, onClose, onCopy, onError, onMutated }: FileDe
         ) : null}
       </form>
 
-      <button className="danger-action" disabled={busy} type="button" onClick={handleDelete}>
+      <button
+        className="danger-action"
+        disabled={busy}
+        type="button"
+        onClick={handleDelete}
+      >
         Delete file
       </button>
     </aside>

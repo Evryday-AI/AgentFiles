@@ -208,3 +208,10 @@ p { line-height: 1.5; }
   .preview-dialog .media-content video, .preview-dialog .media-content img { max-height: 65dvh; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
+
+.code-lookup { display:flex; align-items:end; gap:10px; flex-wrap:wrap; }
+.code-lookup .field { flex:1 1 180px; }
+.agent-setup, .upload-result, .storage-facts { display:grid; gap:12px; min-width:0; }
+.agent-setup code, .upload-result code, .upload-result a { overflow-wrap:anywhere; }
+.agent-setup .tile-actions { flex-wrap:wrap; }
+@media (max-width:720px) { .row-actions { flex-wrap:wrap; max-width:155px; } }

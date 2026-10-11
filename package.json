@@ -20,7 +20,8 @@
     "migrate": "node dist/server/migrate.js",
     "migrate:src": "tsx src/server/migrate.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "validate:openapi": "node scripts/validate-openapi.mjs"
+    "validate:openapi": "node scripts/validate-openapi.mjs",
+    "test:browser": "node scripts/test-browser.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
@@ -36,6 +37,7 @@
   },
   "devDependencies": {
     "@apidevtools/swagger-parser": "13.1.0",
+    "@playwright/test": "1.64.0",
     "@types/node": "^24.10.1",
     "@types/pg": "^8.15.6",
     "@types/react": "^19.2.7",

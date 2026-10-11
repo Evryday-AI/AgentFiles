@@ -1,9 +1,13 @@
 import { ChangeEvent, useRef, useState } from "react";
-import { FileItem, uploadFile } from "../api";
+import { FileItem, fileError, uploadFile } from "../api";
+
+import { UploadResult } from "./UploadResult";
 
 interface UploadPanelProps {
   onUploaded: (files: FileItem[]) => void;
   onError: (message: string) => void;
+  canPersist: boolean;
+  onCopy: (value: string, label: string) => void;
 }
 
 interface UploadRow {
@@ -13,10 +17,16 @@ interface UploadRow {
   percent: number;
   status: "queued" | "uploading" | "done" | "error";
   code?: string;
+  result?: FileItem;
   error?: string;
 }
 
-export function UploadPanel({ onUploaded, onError }: UploadPanelProps) {
+export function UploadPanel({
+  onUploaded,
+  onError,
+  canPersist,
+  onCopy,
+}: UploadPanelProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [durable, setDurable] = useState(false);
   const [uploads, setUploads] = useState<UploadRow[]>([]);
@@ -50,13 +60,19 @@ export function UploadPanel({ onUploaded, onError }: UploadPanelProps) {
       updateRow(rowId, { status: "uploading", percent: 0 });
       try {
         const result = await uploadFile(file, {
-          durable,
-          onProgress: (progress) => updateRow(rowId, { percent: progress.percent }),
+          durable: durable && canPersist,
+          onProgress: (progress) =>
+            updateRow(rowId, { percent: progress.percent }),
         });
         uploaded.push(result);
-        updateRow(rowId, { status: "done", percent: 100, code: result.code });
+        updateRow(rowId, {
+          status: "done",
+          percent: 100,
+          code: result.code,
+          result,
+        });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Upload failed";
+        const message = fileError(error);
         updateRow(rowId, { status: "error", error: message });
         onError(message);
       }
@@ -70,14 +86,29 @@ export function UploadPanel({ onUploaded, onError }: UploadPanelProps) {
   }
 
   function updateRow(id: string, patch: Partial<UploadRow>) {
-    setUploads((current) => current.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+    setUploads((current) =>
+      current.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    );
   }
 
   return (
-    <section className={`upload-panel ${dragging ? "dragging" : ""}`} aria-label="Upload files"
-      onDragOver={(event) => { event.preventDefault(); if (!busy) setDragging(true); }}
-      onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
-      onDrop={(event) => { event.preventDefault(); setDragging(false); void uploadFiles(Array.from(event.dataTransfer.files)); }}>
+    <section
+      className={`upload-panel ${dragging ? "dragging" : ""}`}
+      aria-label="Upload files"
+      onDragOver={(event) => {
+        event.preventDefault();
+        if (!busy) setDragging(true);
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node))
+          setDragging(false);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragging(false);
+        void uploadFiles(Array.from(event.dataTransfer.files));
+      }}
+    >
       <div className="upload-copy">
         <h2>{dragging ? "Drop files to upload" : "Upload files"}</h2>
         <p>Drag files here, or choose them from your device.</p>
@@ -86,11 +117,13 @@ export function UploadPanel({ onUploaded, onError }: UploadPanelProps) {
         <label className="toggle-line">
           <input
             checked={durable}
-            disabled={busy}
+            disabled={busy || !canPersist}
             type="checkbox"
             onChange={(event) => setDurable(event.target.checked)}
           />
-          <span>Keep indefinitely</span>
+          <span>
+            {canPersist ? "Keep indefinitely" : "Persistence unavailable"}
+          </span>
         </label>
         <button
           className="primary-action"
@@ -110,20 +143,44 @@ export function UploadPanel({ onUploaded, onError }: UploadPanelProps) {
       </div>
       {uploads.length > 0 ? (
         <div className="upload-queue" aria-live="polite">
-          {!busy ? <button className="queue-dismiss" type="button" onClick={() => setUploads([])}>Dismiss completed uploads</button> : null}
+          {!busy ? (
+            <button
+              className="queue-dismiss"
+              type="button"
+              onClick={() => setUploads([])}
+            >
+              Dismiss completed uploads
+            </button>
+          ) : null}
           {uploads.map((upload) => (
             <div className="upload-row" key={upload.id}>
               <div className="upload-row-main">
                 <span className="truncate">{upload.name}</span>
-                <span className={`status-pill ${upload.status}`}>{upload.code ?? upload.status}</span>
+                <span className={`status-pill ${upload.status}`}>
+                  {upload.code ?? upload.status}
+                </span>
               </div>
-              <div className="progress-track" role="progressbar" aria-label={`Upload ${upload.name}`} aria-valuenow={upload.percent} aria-valuemin={0} aria-valuemax={100}>
+              <div
+                className="progress-track"
+                role="progressbar"
+                aria-label={`Upload ${upload.name}`}
+                aria-valuenow={upload.percent}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
                 <span style={{ width: `${upload.percent}%` }} />
               </div>
               <div className="meta-line">
                 <span>{formatBytes(upload.size)}</span>
-                {upload.error ? <span>{upload.error}</span> : <span>{upload.percent}%</span>}
+                {upload.error ? (
+                  <span>{upload.error}</span>
+                ) : (
+                  <span>{upload.percent}%</span>
+                )}
               </div>
+              {upload.result ? (
+                <UploadResult file={upload.result} onCopy={onCopy} />
+              ) : null}
             </div>
           ))}
         </div>

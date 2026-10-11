@@ -1,5 +1,5 @@
 import { Fragment, ReactNode } from "react";
-import { absoluteDownloadUrl, FileItem } from "../api";
+import { FileItem } from "../api";
 
 interface ListViewProps {
   files: FileItem[];
@@ -36,8 +36,8 @@ export function ListView({ files, selectedCode, selectedDetail, onSelect, onCopy
                 <button type="button" onClick={() => onCopy(file.code, "Code copied")}>
                   Copy code
                 </button>
-                <button type="button" onClick={() => onCopy(absoluteDownloadUrl(file.code), "URL copied")}>
-                  Copy URL
+                <button type="button" onClick={() => onCopy(file.private_url, "Private link copied")}>
+                  Copy private link
                 </button>
               </div>
             </article>

@@ -1,6 +1,6 @@
 import { Fragment, ReactNode } from "react";
 import { MediaPreview } from "./MediaPreview";
-import { absoluteDownloadUrl, FileItem } from "../api";
+import { FileItem } from "../api";
 
 interface GalleryViewProps {
   files: FileItem[];
@@ -33,9 +33,9 @@ export function GalleryView({ files, selectedCode, selectedDetail, onSelect, onC
                   </button>
                   <button
                     type="button"
-                    onClick={() => onCopy(absoluteDownloadUrl(file.code), "URL copied")}
+                    onClick={() => onCopy(file.private_url, "Private link copied")}
                   >
-                    Copy URL
+                    Copy private link
                   </button>
                 </div>
               </div>
