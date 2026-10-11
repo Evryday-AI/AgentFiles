@@ -10,6 +10,7 @@ import {
 } from "../../src/server/filesRoutes";
 import type { FileRecord } from "../../src/server/filesRepo";
 import { buildServer } from "../../src/server/index";
+import { createUploadAdmission } from "../../src/server/uploadAdmission";
 
 const now = new Date("2026-06-07T18:00:00.000Z");
 const expiresAt = new Date("2026-06-14T18:00:00.000Z");
@@ -59,10 +60,30 @@ async function buildTestServer(
   dependencies: Partial<FilesRoutesDependencies> = {},
 ) {
   const server = Fastify({ logger: false });
+  // Existing route-policy fixtures inject a completed synthetic byte record.
+  // Adapt them to the new staged boundary; real disk/network evidence is in integration/uploads.
+  const mockedStorage = dependencies.storage as any;
+  if (mockedStorage?.saveUploadStream) {
+    const save = mockedStorage.saveUploadStream;
+    dependencies.storage = {
+      ...mockedStorage,
+      stageUpload: async (input) => {
+        const saved = await save(input);
+        input.onKey?.(saved.storageKey);
+        return { ...saved, tempKey: saved.storageKey, extension: "" };
+      },
+      finalizeUpload: async (_root, staged, hold) => {
+        hold?.(staged.tempKey);
+        return { storageKey: staged.tempKey, sizeBytes: staged.sizeBytes, sha256: staged.sha256 };
+      },
+      discardUpload: mockedStorage.deleteStoredFile ?? (async () => {}),
+    };
+  }
   await server.register(registerFilesRoutes, {
     config: baseConfig,
     now: () => now,
     resolvePrincipal: async () => apiKeyPrincipal,
+    admission: createUploadAdmission(baseConfig, 0, async () => Number.MAX_SAFE_INTEGER),
     ...dependencies,
   });
   return server;

@@ -118,14 +118,59 @@ const db = unconfiguredDatabase;
 export async function createFileRecord(
   input: CreateFileInput,
   client: Queryable = db,
+  allocation: { generateCode?: () => string; namespace?: readonly string[] } = {},
+): Promise<FileRecord> {
+  const database = client as Queryable & { withClient?: <T>(work: (pinned: Queryable) => Promise<T>) => Promise<T> };
+  if (!database.withClient) throw new Error("Pinned database transaction required");
+  return database.withClient(async pinned => {
+    let commitAttempted = false;
+    await pinned.query("BEGIN");
+    try {
+      await uploadOwnershipLock(pinned, input.storageKey);
+      const record = await allocateFileRecord(input, pinned, allocation);
+      commitAttempted = true;
+      await pinned.query("COMMIT");
+      return record;
+    } catch(error) {
+      if (!commitAttempted) {
+        let rolledBack = false;
+        try { await pinned.query("ROLLBACK"); rolledBack = true; } catch { /* Outcome remains unknown. */ }
+        if (rolledBack) throw error;
+      }
+      throw new UploadAllocationUncertainError(error);
+    }
+  });
+}
+
+export class UploadAllocationUncertainError extends Error {
+  constructor(readonly originalError: unknown) { super("Upload allocation outcome requires reconciliation"); }
+}
+async function uploadOwnershipLock(pinned: Queryable, key: string) {
+  await pinned.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [key]);
+}
+// Waiting for this transaction lock proves the original allocator has ended.
+// A lock/query timeout throws: it never converts uncertainty to absence.
+export async function reconcileUpload(storageKey: string, client: Queryable = db): Promise<FileRecord | null> {
+  return transaction(client, async pinned => {
+    await pinned.query("SET LOCAL lock_timeout='2000ms'");
+    await uploadOwnershipLock(pinned, storageKey);
+    const result = await pinned.query<FileRow & { code_issued: boolean }>(`SELECT ${fileColumns}, EXISTS(SELECT 1 FROM issued_file_codes WHERE issued_file_codes.code=files.code) AS code_issued FROM files WHERE storage_key=$1`,[storageKey]);
+    if (result.rows[0] && !result.rows[0].code_issued) throw new Error("Upload registry ownership is inconsistent");
+    return result.rows[0] ? mapFileRow(result.rows[0]) : null;
+  });
+}
+
+async function allocateFileRecord(
+  input: CreateFileInput,
+  client: Queryable,
+  allocation: { generateCode?: () => string; namespace?: readonly string[] },
 ): Promise<FileRecord> {
   const callerProvidedCode = input.code !== undefined;
 
   for (let attempt = 0; attempt < FILE_CODE_ALLOCATION_ATTEMPTS; attempt += 1) {
-    const code = input.code ?? createFileCode();
+    const code = input.code ?? (allocation.generateCode ?? createFileCode)();
     if (!FILE_CODE_PATTERN.test(code))
       throw new FilePolicyError(400, "Invalid file code", "INVALID_INPUT");
-    try {
       const result = await client.query<FileRow>(
         `
           WITH reserved AS (
@@ -171,17 +216,16 @@ export async function createFileRecord(
           "Code reservation already exists",
           "CODE_ALLOCATION_RETRY_EXHAUSTED",
         );
-    } catch (error) {
-      if (callerProvidedCode || !isFileCodeUniqueViolation(error)) {
-        throw error;
-      }
-    }
   }
 
+  const namespace = allocation.namespace;
+  if (namespace && (!namespace.length || new Set(namespace).size !== namespace.length || namespace.some(code => !FILE_CODE_PATTERN.test(code)))) throw new Error("Invalid code namespace");
   const count = await client.query<{ count: string }>(
-    "SELECT count(*) AS count FROM issued_file_codes",
+    namespace ? "SELECT count(*) AS count FROM issued_file_codes WHERE code = ANY($1::text[])" : "SELECT count(*) AS count FROM issued_file_codes WHERE code ~ '^F-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}$'",
+    namespace ? [namespace] : [],
   );
-  if (Number(count.rows[0]?.count) >= FILE_CODE_NAMESPACE_SIZE)
+  const value = count.rows[0]?.count;
+  if (typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value) && BigInt(value) === BigInt(namespace?.length ?? FILE_CODE_NAMESPACE_SIZE))
     throw new FilePolicyError(
       507,
       "Code namespace exhausted",
@@ -446,21 +490,6 @@ function clampInteger(value: number, min: number, max: number): number {
     return min;
   }
   return Math.min(max, Math.max(min, Math.trunc(value)));
-}
-
-function isFileCodeUniqueViolation(error: unknown): boolean {
-  return (
-    isErrorWithPgCode(error) &&
-    error.code === "23505" &&
-    (error.constraint === "files_code_key" ||
-      error.message.includes("files_code_key"))
-  );
-}
-
-function isErrorWithPgCode(
-  error: unknown,
-): error is Error & { code?: string; constraint?: string } {
-  return error instanceof Error;
 }
 
 function isQueryable(value: unknown): value is Queryable {

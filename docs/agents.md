@@ -82,11 +82,11 @@ For an existing file, persistence uses `PATCH /api/files/:code` with JSON `{"dur
 | 413 | Reduce the file or ask the operator to review upload limits. |
 | 429 | Honor `Retry-After` before a new safe attempt. |
 | 5xx | Inspect/reconcile before repeating mutations. |
-| 507 | Planned capacity rejection; no baseline capacity guarantee. |
+| 507 | STORAGE_CAPACITY_EXCEEDED means the maximum upload reservation cannot fit; CODE_SPACE_EXHAUSTED means operator intervention is required. |
 
 A timeout or response failure after POST can leave a successfully created file. There is no documented idempotency key. Do not blindly retry an upload. If the response provided a code, inspect it with download permission. Otherwise, list only when `canList` is true, using limit/offset pagination and comparing instance, upload window, creation time, name, size, and checksum. A matching filename alone is insufficient; concurrent identical uploads can still be ambiguous. If reconciliation is unsafe or unavailable, report the unknown outcome and ask the requester how to proceed.
 
-Expiry and share revocation block new transfers. They do not revoke recipient copies or stop transfers already admitted. Share download limits count admitted requests, including requests whose byte delivery later fails. The baseline does not provide a verified cleanup schedule, capacity reservation, issued-code registry, or clean-install assurance; these remain later phase requirements.
+Expiry and share revocation block new transfers. They do not revoke recipient copies or stop transfers already admitted. Share download limits count admitted requests, including requests whose byte delivery later fails. Uploads reserve the configured maximum bytes through metadata commit or compensation. Issued codes have permanent code-only reservations. Full cleanup recovery, generic-client and release acceptance remain later phase requirements; these source contracts do not establish an installable release.
 
 See the [API contract](api-contract.md) for exact DTO aliases and route permissions. `/api/instance`, static skill download, and OpenAPI are planned for later phases. The current connection check is `/api/auth/session`.
 

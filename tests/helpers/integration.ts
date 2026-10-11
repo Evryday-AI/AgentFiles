@@ -103,7 +103,7 @@ export async function createOwnedTestDatabase() {
 
 export async function createIntegrationFixture(
   overrides: Partial<AppConfig> = {},
-  dependencies: { now?: () => Date } = {},
+  dependencies: Omit<NonNullable<Parameters<typeof buildServer>[1]>, "db"> = {},
 ) {
   const owned = await createOwnedTestDatabase();
   let storageRoot: string;

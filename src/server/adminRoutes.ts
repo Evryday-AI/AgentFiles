@@ -24,6 +24,7 @@ import {
 import { getStorageUsage as defaultGetStorageUsage } from "./storage.js";
 
 interface AdminRoutesOptions {
+  uploadRuntime?: import("./uploadRuntime.js").UploadRuntime;
   config: AppConfig;
   db?: Queryable;
   storage?: Partial<AdminStorage>;
@@ -221,7 +222,12 @@ export async function registerAdminRoutes(
       return;
     }
 
-    return storage.getStorageUsage(config.storageRoot);
+    const usage = await storage.getStorageUsage(config.storageRoot);
+    return { ...usage, ...(options.uploadRuntime ? {
+      ...options.uploadRuntime.admission.snapshot(),
+      unresolvedUploads: options.uploadRuntime.unresolvedCount(),
+      maxStorageBytes: config.maxStorageBytes,
+    } : {}) };
   });
 
   server.post("/api/admin/api-keys", async (request, reply) => {

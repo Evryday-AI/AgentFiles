@@ -27,6 +27,8 @@ import {
   claimFileDeletion,
   finalizeFileDeletion,
   setFileDurable,
+  reconcileUpload,
+  UploadAllocationUncertainError,
   type CreateFileInput,
   type FileFilters,
   type FileRecord,
@@ -34,12 +36,23 @@ import {
 import {
   deleteStoredFile,
   openDownloadStream,
-  saveUploadStream,
+  stageUpload,
+  finalizeUpload,
+  discardUpload,
+  storedFileBytes,
+  getStorageUsage,
+  getFreeDiskBytes,
+  type StagedUpload,
   type SavedUpload,
   type SaveUploadInput,
+  MULTIPART_IDLE_TIMEOUT_MS,
 } from "./storage.js";
+import type { Readable } from "node:stream";
+import { createUploadAdmission, type UploadAdmission } from "./uploadAdmission.js";
+import { createActiveUploads, type ActiveUploads } from "./activeUploads.js";
 
 interface FilesRepo {
+  reconcileUpload: typeof reconcileUpload;
   createFileRecord(
     input: CreateFileInput,
     client?: Queryable,
@@ -52,7 +65,10 @@ interface FilesRepo {
 }
 
 interface FilesStorage {
-  saveUploadStream(input: SaveUploadInput): Promise<SavedUpload>;
+  stageUpload(input: SaveUploadInput & { maxBytes: number }): Promise<StagedUpload>;
+  finalizeUpload: typeof finalizeUpload;
+  discardUpload: typeof discardUpload;
+  storedFileBytes: typeof storedFileBytes;
   openDownloadStream(
     storageRoot: string,
     storageKey: string,
@@ -64,7 +80,7 @@ interface ParsedUpload {
   filename: string;
   mimetype: string;
   fields: Record<string, unknown>;
-  saved: SavedUpload;
+  staged: StagedUpload;
 }
 
 export interface FilesRoutesDependencies {
@@ -73,6 +89,10 @@ export interface FilesRoutesDependencies {
   repo?: Partial<FilesRepo>;
   storage?: Partial<FilesStorage>;
   now?: () => Date;
+  admission?: UploadAdmission;
+  activeUploads?: ActiveUploads;
+  uploadIdleTimeoutMs?: number;
+  retainUnknown?: (work: () => Promise<boolean>) => void;
   resolvePrincipal?: (
     request: FastifyRequest,
     options: { config: AppConfig; db?: Queryable },
@@ -80,6 +100,7 @@ export interface FilesRoutesDependencies {
 }
 
 const defaultRepo: FilesRepo = {
+  reconcileUpload,
   createFileRecord,
   findFileByCode,
   listFiles,
@@ -89,7 +110,10 @@ const defaultRepo: FilesRepo = {
 };
 
 const defaultStorage: FilesStorage = {
-  saveUploadStream,
+  stageUpload,
+  finalizeUpload,
+  discardUpload,
+  storedFileBytes,
   openDownloadStream,
   deleteStoredFile,
 };
@@ -100,7 +124,6 @@ const multipartLimits = {
   fieldSize: 4 * 1024,
   files: 1,
   parts: 25,
-  fileSize: 1024 * 1024 * 1024,
 };
 
 const filenameMimeTypes: Record<string, string> = {
@@ -123,6 +146,9 @@ export async function registerFilesRoutes(
   const repo = { ...defaultRepo, ...dependencies.repo };
   const storage = { ...defaultStorage, ...dependencies.storage };
   const now = dependencies.now ?? (() => new Date());
+  const admission = dependencies.admission ?? createUploadAdmission(config, 0, () => getFreeDiskBytes(config.storageRoot));
+  const activeUploads = dependencies.activeUploads ?? createActiveUploads();
+  if (!dependencies.admission) server.addHook("onReady", async () => { await admission.rescan(async () => (await getStorageUsage(config.storageRoot)).bytes); });
   const resolvePrincipal =
     dependencies.resolvePrincipal ?? defaultResolvePrincipal;
 
@@ -181,55 +207,90 @@ export async function registerFilesRoutes(
       const principal = uploadPrincipals.get(request);
       if (!principal) return reply;
 
-      let upload: ParsedUpload | null;
+      const lease = await admission.acquire();
+      const releases = new Map<string, () => void>();
+      const hold = (key: string) => { if (!releases.has(key)) releases.set(key, activeUploads.hold(key)); };
+      let saved: SavedUpload | undefined;
+      let uncertain = false;
+      const compensate = async () => {
+        let retained = 0;
+        for (const key of releases.keys()) {
+          try { await storage.discardUpload(config.storageRoot, key); }
+          catch {
+            request.log.error("Upload compensation failed; retained bytes remain charged");
+            try { retained += await storage.storedFileBytes(config.storageRoot,key); }
+            catch { retained += config.maxUploadBytes; }
+          }
+        }
+        await lease.abort(retained);
+      };
       try {
-        upload = await readUploadRequest(
+        const upload = await readUploadRequest(
           request,
           config.storageRoot,
           storage,
           config.maxUploadBytes,
+          hold,
+          key => activeUploads.hold(key),
+          () => admission.checkpoint(),
+          dependencies.uploadIdleTimeoutMs,
         );
-      } catch (error) {
-        if (isMultipartLimitError(error)) {
-          return reply
-            .code(413)
-            .send({ error: "Multipart upload exceeds configured limits" });
-        }
-        throw error;
-      }
-      if (!upload) {
-        return reply.code(400).send({ error: "A file upload is required" });
-      }
-
-      try {
+        if (!upload) throw new FilePolicyError(400, "A file upload is required", "INVALID_INPUT");
         strictObject(upload.fields, ["durable"]);
         const durable =
           upload.fields.durable === undefined
             ? false
             : formBoolean(upload.fields.durable);
         enforcePersistence(durable, principal, config);
+        saved = await storage.finalizeUpload(config.storageRoot, upload.staged, hold, key => activeUploads.hold(key));
         const record = await repo.createFileRecord(
           {
             originalName: upload.filename,
-            storageKey: upload.saved.storageKey,
+            storageKey: saved.storageKey,
             mimeType: normalizeUploadMimeType(upload.mimetype, upload.filename),
-            sizeBytes: upload.saved.sizeBytes,
+            sizeBytes: saved.sizeBytes,
             uploadedByType: principal.type,
             uploadedByName: principal.name,
             expiresAt: durable ? null : retentionExpiry(config, now()),
             isDurable: durable,
-            sha256: upload.saved.sha256,
+            sha256: saved.sha256,
             metadata: {},
           },
           db,
         );
+        await lease.commit(saved.sizeBytes);
         return reply.code(201).send(publicFile(record, config));
       } catch (error) {
-        await storage.deleteStoredFile(
-          config.storageRoot,
-          upload.saved.storageKey,
-        );
+        if (error instanceof UploadAllocationUncertainError && saved) {
+          try {
+            const record = await repo.reconcileUpload(saved.storageKey, db);
+            if (record) {
+              await lease.commit(saved.sizeBytes);
+              return reply.code(201).send(publicFile(record, config));
+            }
+          } catch {
+            // Keep the reservation AND both path references. A missing row from
+            // an unlocked query cannot prove a pending transaction rolled back.
+            uncertain = true;
+            dependencies.retainUnknown?.(async () => {
+              const record = await repo.reconcileUpload(saved!.storageKey, db);
+              if (record) await lease.commit(saved!.sizeBytes);
+              else await compensate();
+              for (const release of releases.values()) release();
+              return true;
+            });
+            request.log.error("Upload ownership unresolved; bytes protected and reservation retained");
+            throw new FilePolicyError(503, "Upload outcome unknown; do not automatically retry", "UPLOAD_OUTCOME_UNKNOWN");
+          }
+          error = error.originalError;
+        }
+        await compensate();
+        if (isErrorWithCode(error) && error.code === "ENOSPC") throw new FilePolicyError(507,"Storage capacity unavailable","STORAGE_CAPACITY_EXCEEDED");
+        if (isMultipartLimitError(error)) throw new FilePolicyError(413, "Multipart upload exceeds configured limits", "UPLOAD_TOO_LARGE");
+        if (error instanceof FilePolicyError && error.code === "UPLOAD_IDLE_TIMEOUT" && request.raw.readableEnded) throw new FilePolicyError(400,"Incomplete multipart upload","INVALID_INPUT");
         throw error;
+      } finally {
+        if (!uncertain) for (const release of releases.values()) release();
       }
     },
   );
@@ -372,6 +433,7 @@ export async function registerFilesRoutes(
           db,
         );
         if (!deleted) throw new Error("Deletion finalization failed");
+        await admission.rescan(async () => (await getStorageUsage(config.storageRoot)).bytes);
       } catch {
         request.log.error("File deletion failed; claim retained for recovery");
         return reply
@@ -388,23 +450,49 @@ async function readUploadRequest(
   storageRoot: string,
   storage: FilesStorage,
   maxUploadBytes: number,
+  hold: (key: string) => void,
+  protectKey: (key: string) => () => void,
+  checkpoint: () => Promise<void>,
+  idleTimeoutMs?: number,
 ): Promise<ParsedUpload | null> {
-  const fields: Record<string, unknown> = {};
+  const fields: Record<string, unknown> = Object.create(null);
   let upload: ParsedUpload | null = null;
   let fieldCount = 0;
   let fileCount = 0;
   let partCount = 0;
+  let currentStream: Readable | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let rejectIdle!: (error: Error) => void;
+  const expired = new Promise<never>((_resolve,reject) => { rejectIdle = reject; });
+  const fail = (error: Error) => { currentStream?.destroy(error); rejectIdle(error); };
+  const resetIdle = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fail(request.raw.readableEnded
+      ? new FilePolicyError(400, "Incomplete multipart upload", "INVALID_INPUT")
+      : new FilePolicyError(408, "Upload idle timeout", "UPLOAD_IDLE_TIMEOUT")), idleTimeoutMs ?? MULTIPART_IDLE_TIMEOUT_MS);
+    timer.unref();
+  };
+  const aborted = () => fail(new FilePolicyError(400, "Upload interrupted", "INVALID_INPUT"));
+  request.raw.on("data",resetIdle);
+  request.raw.on("aborted",aborted);
+  request.raw.on("error",aborted);
+  resetIdle();
 
   try {
-    for await (const part of request.parts({
+    const parts = request.parts({
       limits: { ...multipartLimits, fileSize: maxUploadBytes },
-    })) {
+    });
+    while (true) {
+      const next = await Promise.race([parts.next(),expired]);
+      if (next.done) break;
+      const part = next.value;
       partCount += 1;
       if (partCount > multipartLimits.parts) {
         throw multipartLimitError();
       }
 
       if (part.type === "file") {
+        currentStream = part.file;
         fileCount += 1;
         if (fileCount > multipartLimits.files || upload) {
           await drainFilePart(part);
@@ -413,21 +501,27 @@ async function readUploadRequest(
 
         if (part.fieldname !== "file") invalidInput("Expected file part");
         validateFilename(part.filename);
-        const saved = await storage.saveUploadStream({
+        const staged = await storage.stageUpload({
           storageRoot,
           originalName: part.filename,
           stream: part.file,
+          maxBytes: maxUploadBytes,
+          onKey: hold,
+          protectKey,
+          checkpoint,
+          idleTimeoutMs,
         });
+        hold(staged.tempKey);
         await drainFilePart(part);
+        currentStream = undefined;
         if (part.file.truncated) {
-          await storage.deleteStoredFile(storageRoot, saved.storageKey);
           throw multipartLimitError();
         }
         upload = {
           filename: part.filename,
           mimetype: part.mimetype,
           fields,
-          saved,
+          staged,
         };
       } else {
         fieldCount += 1;
@@ -444,11 +538,6 @@ async function readUploadRequest(
       }
     }
   } catch (error) {
-    if (upload) {
-      await storage
-        .deleteStoredFile(storageRoot, upload.saved.storageKey)
-        .catch(() => {});
-    }
     if (
       isErrorWithCode(error) &&
       error.code === "ERR_STREAM_PREMATURE_CLOSE" &&
@@ -459,6 +548,11 @@ async function readUploadRequest(
       throw multipartLimitError();
     }
     throw error;
+  } finally {
+    clearTimeout(timer);
+    request.raw.off("data",resetIdle);
+    request.raw.off("aborted",aborted);
+    request.raw.off("error",aborted);
   }
 
   return upload;

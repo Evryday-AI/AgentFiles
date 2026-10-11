@@ -55,7 +55,7 @@ class FakeDatabase implements Queryable {
   }
   async query<T>(text: string, params: readonly unknown[] = []) {
     this.calls.push({ text: text.replace(/\s+/g, " ").trim(), params });
-    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(text))
+    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(text) || text.includes("pg_advisory"))
       return { rows: [], rowCount: 0 };
     const response = this.responses.shift() ?? [];
     if (response instanceof Error) throw response;
@@ -66,9 +66,9 @@ describe("files repository lifecycle protocol", () => {
   it("atomically reserves the code and inserts metadata in one SQL statement", async () => {
     const db = new FakeDatabase([[row]]);
     const record = await createFileRecord({ ...input, code: "F-ABCDE" }, db);
-    expect(db.calls).toHaveLength(1);
-    expect(db.calls[0].text).toContain("INSERT INTO issued_file_codes");
-    expect(db.calls[0].text).toContain("FROM reserved");
+    expect(db.calls).toHaveLength(4);
+    expect(db.calls[2].text).toContain("INSERT INTO issued_file_codes");
+    expect(db.calls[2].text).toContain("FROM reserved");
     expect(record.lifecycleState).toBe("active");
     expect(record.sizeBytes).toBe(42);
   });
@@ -78,7 +78,7 @@ describe("files repository lifecycle protocol", () => {
       .mockReturnValueOnce("F-ABCDE")
       .mockReturnValueOnce("F-NEW22");
     expect((await createFileRecord(input, db)).code).toBe("F-NEW22");
-    expect(db.calls).toHaveLength(2);
+    expect(db.calls).toHaveLength(5);
   });
   it("bounds retries at32 and distinguishes namespace exhaustion", async () => {
     vi.mocked(createFileCode).mockReturnValue("F-ABCDE");
@@ -94,7 +94,7 @@ describe("files repository lifecycle protocol", () => {
             ? "CODE_ALLOCATION_RETRY_EXHAUSTED"
             : "CODE_SPACE_EXHAUSTED",
       });
-      expect(db.calls).toHaveLength(33);
+      expect(db.calls).toHaveLength(36);
     }
   });
   it("does not reassign caller-provided reserved or invalid code", async () => {
@@ -105,13 +105,17 @@ describe("files repository lifecycle protocol", () => {
     await expect(
       createFileRecord({ ...input, code: "F-OLD01" }, db),
     ).rejects.toMatchObject({ code: "INVALID_INPUT" });
-    expect(db.calls).toHaveLength(1);
+    expect(db.calls.filter(c=>c.text.includes("INSERT INTO issued_file_codes"))).toHaveLength(1);
+  });
+  it.each(["NaN", "", "-1", String(32**5+1)])("an invalid or incomplete registry count cannot prove exhaustion: %s",async count=>{
+    const db=new FakeDatabase([...Array.from({length:32},()=>[]),[{count}]]);
+    await expect(createFileRecord(input,db)).rejects.toMatchObject({code:"CODE_ALLOCATION_RETRY_EXHAUSTED",statusCode:503});
   });
   it("propagates non-collision database failure without issuing another code", async () => {
     const error = new Error("synthetic DB unavailable");
     const db = new FakeDatabase([error]);
     await expect(createFileRecord(input, db)).rejects.toBe(error);
-    expect(db.calls).toHaveLength(1);
+    expect(db.calls).toHaveLength(4);
   });
   it("returns missing metadata as null", async () => {
     expect(await findFileByCode("F-ABCDE", new FakeDatabase([[]]))).toBeNull();

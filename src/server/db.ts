@@ -56,8 +56,9 @@ export function createDatabase(databaseUrl: string): Database {
     },
     async withClient(work) {
       const client = await pool.connect();
-      try { return await work(client); }
-      finally { client.release(); }
+      try { const value = await work(client); client.release(); return value; }
+      // Never return a connection with an unresolved transaction to the pool.
+      catch (error) { client.release(error instanceof Error ? error : true); throw error; }
     },
     close() { return closing ??= pool.end(); },
   };

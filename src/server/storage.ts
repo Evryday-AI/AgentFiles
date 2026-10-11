@@ -1,164 +1,167 @@
-import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
-import { link, mkdir, readdir, rm, rmdir, stat } from "node:fs/promises";
-import { basename, dirname, extname, join, resolve, sep } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
+import { link, mkdir, readdir, lstat, realpath, open, unlink, statfs } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, resolve, sep, win32 } from "node:path";
 import { Transform, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { FilePolicyError } from "./filePolicy.js";
 
 export interface SaveUploadInput {
-  storageRoot: string;
-  code?: string;
-  originalName: string;
-  stream: NodeJS.ReadableStream;
+  storageRoot: string; code?: string; originalName: string; stream: NodeJS.ReadableStream;
+  onKey?: (key: string) => void; checkpoint?: () => Promise<void>; idleTimeoutMs?: number;
+  protectKey?: (key: string) => () => void;
 }
-
-export interface SavedUpload {
-  storageKey: string;
-  sizeBytes: number;
-  sha256: string;
-}
-
+export interface SavedUpload { storageKey: string; sizeBytes: number; sha256: string }
+export interface StagedUpload { tempKey: string; sizeBytes: number; sha256: string; extension: string }
 export const MULTIPART_IDLE_TIMEOUT_MS = 30_000;
-
-export async function saveUploadStream(
-  input: SaveUploadInput,
-): Promise<SavedUpload> {
+function invalid(): never { throw new Error("Invalid storage key."); }
+export function storagePath(storageRoot: string, key: string): string {
+  const root = resolve(storageRoot);
+  if (!key.trim() || isAbsolute(key) || win32.isAbsolute(key) || key.includes(":") || key.includes("\0") ||
+      key.split(/[\\/]/).some(p => !p || p === "." || p === "..")) invalid();
+  const path = resolve(root, key);
+  if (path === root || !path.startsWith(root + sep)) invalid();
+  return path;
+}
+// The exclusively app-owned mount prevents ancestor swaps by external writers.
+async function safePath(rootInput: string, key: string, allowMissing = false): Promise<string> {
+  const root = resolve(rootInput), target = storagePath(root, key);
+  await safeRoot(root);
+  const canonicalRoot = await realpath(root);
+  let current = root;
+  const parts = target.slice(root.length + 1).split(sep);
+  for (let index = 0; index < parts.length; index++) {
+    current = join(current, parts[index]);
+    let info;
+    try { info = await lstat(current); }
+    catch (error) { if (allowMissing && nodeCode(error) === "ENOENT") return target; throw error; }
+    if (info.isSymbolicLink()) invalid();
+    const canonical = await realpath(current);
+    if (!canonical.startsWith(canonicalRoot + sep)) invalid();
+    if (index < parts.length - 1 ? !info.isDirectory() : !info.isFile()) invalid();
+  }
+  return target;
+}
+async function safeRoot(root: string) {
+  for (let current = resolve(root); ; current = dirname(current)) {
+    const info = await lstat(current);
+    if (!info.isDirectory() || info.isSymbolicLink()) invalid();
+    const canonical = await realpath(current);
+    const normalize = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
+    if (normalize(canonical) !== normalize(current)) invalid();
+    if (dirname(current) === current) break;
+  }
+}
+async function ownedDirectory(root: string, key: string) {
+  await safePath(root, key + "/probe", true);
+  await mkdir(storagePath(root, key), { mode: 0o700 }).catch(error => { if (nodeCode(error) !== "EEXIST") throw error; });
+  await safePath(root, key + "/probe", true);
+}
+export async function stageUpload(input: SaveUploadInput & { maxBytes: number }): Promise<StagedUpload> {
+  if (!Number.isSafeInteger(input.maxBytes) || input.maxBytes < 1) throw new Error("Invalid upload limit");
+  if ((input.stream as Readable).destroyed) throw new FilePolicyError(400, "Upload interrupted", "INVALID_INPUT");
   const root = resolve(input.storageRoot);
-  // Placement is independent of the finite human-code namespace. Neither an
-  // uploaded filename nor a retried code candidate chooses existing byte paths.
-  const safeCode = randomBytes(16).toString("hex");
-  const extension = sanitizeExtension(input.originalName);
-  const storageKey = `${safeCode}/${safeCode}${extension}`;
-  const finalPath = storagePath(root, storageKey);
-  const tmpKey = `.tmp/${safeCode}-${randomBytes(16).toString("hex")}.upload`;
-  const tmpPath = storagePath(root, tmpKey);
-
-  await mkdir(join(root, ".tmp"), { recursive: true });
-  await mkdir(join(root, safeCode), { recursive: true });
-
+  await ownedDirectory(root, ".tmp");
+  const tempKey = `.tmp/${randomUUID()}.upload`, tempPath = await safePath(root, tempKey, true);
   const hash = createHash("sha256");
   let sizeBytes = 0;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
-  const resetIdleTimer = () => {
+  let rejectIdle!: (error: Error) => void;
+  const idle = new Promise<never>((_resolve,reject) => { rejectIdle = reject; });
+  const resetIdle = () => {
     clearTimeout(idleTimer);
-    idleTimer = setTimeout(
-      () =>
-        (input.stream as Readable).destroy(new Error("Upload idle timeout")),
-      MULTIPART_IDLE_TIMEOUT_MS,
-    );
+    idleTimer = setTimeout(() => {
+      const error = new FilePolicyError(408, "Upload idle timeout", "UPLOAD_IDLE_TIMEOUT");
+      (input.stream as Readable).destroy(error);
+      rejectIdle(error);
+    }, input.idleTimeoutMs ?? MULTIPART_IDLE_TIMEOUT_MS);
     idleTimer.unref();
   };
   const meter = new Transform({
     transform(chunk: Buffer | string, _encoding, callback) {
-      resetIdleTimer();
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      sizeBytes += buffer.byteLength;
-      hash.update(buffer);
-      callback(null, buffer);
+      resetIdle();
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (sizeBytes + bytes.length > input.maxBytes) {
+        callback(new FilePolicyError(413, "Upload exceeds configured limit", "UPLOAD_TOO_LARGE")); return;
+      }
+      sizeBytes += bytes.length; hash.update(bytes);
+      Promise.resolve().then(() => input.checkpoint?.()).then(() => callback(null, bytes), callback);
     },
   });
-
+  const releaseProspective = input.protectKey?.(tempKey);
+  const handle = await open(tempPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600)
+    .catch(error => { releaseProspective?.(); throw error; });
+  input.onKey?.(tempKey);
+  releaseProspective?.();
+  const output = handle.createWriteStream();
   try {
-    resetIdleTimer();
-    await pipeline(
-      input.stream,
-      meter,
-      createWriteStream(tmpPath, { flags: "wx" }),
-    );
-    await link(tmpPath, finalPath);
-    await rm(tmpPath, { force: true });
-  } catch (error) {
-    await rm(tmpPath, { force: true });
-    await rmdir(dirname(finalPath)).catch(() => {});
-    throw error;
-  } finally {
-    clearTimeout(idleTimer);
+    if ((input.stream as Readable).destroyed) throw new FilePolicyError(400, "Upload interrupted", "INVALID_INPUT");
+    resetIdle();
+    await Promise.race([pipeline(input.stream, meter, output),idle]);
   }
-
-  return {
-    storageKey,
-    sizeBytes,
-    sha256: hash.digest("hex"),
-  };
+  catch (error) { output.destroy(); meter.destroy(); await handle.close().catch(()=>{}); await discardUpload(root, tempKey).catch(() => {}); throw error; }
+  finally { clearTimeout(idleTimer); await handle.close().catch(() => {}); }
+  return { tempKey, sizeBytes, sha256: hash.digest("hex"), extension: sanitizeExtension(input.originalName) };
 }
-
-export async function openDownloadStream(
-  storageRoot: string,
-  storageKey: string,
-): Promise<NodeJS.ReadableStream> {
-  const filePath = storagePath(resolve(storageRoot), storageKey);
-  await stat(filePath);
-  return createReadStream(filePath);
+export async function finalizeUpload(root: string, staged: StagedUpload, onKey?: (key: string) => void, protectKey?: (key: string) => () => void): Promise<SavedUpload> {
+  if (!/^\.tmp\/[a-f0-9-]{36}\.upload$/.test(staged.tempKey) || !/^(?:\.[a-z0-9]{1,15})?$/.test(staged.extension)) invalid();
+  const temp = await safePath(root, staged.tempKey);
+  await ownedDirectory(root, "files");
+  const storageKey = `files/${randomUUID()}${staged.extension}`, final = await safePath(root, storageKey, true);
+  // EEXIST never grants ownership of a conflicting earlier path.
+  const releaseProspective = protectKey?.(storageKey);
+  try { await link(temp, final); onKey?.(storageKey); }
+  finally { releaseProspective?.(); }
+  await discardUpload(root, staged.tempKey);
+  return { storageKey, sizeBytes: staged.sizeBytes, sha256: staged.sha256 };
 }
-
-export async function deleteStoredFile(
-  storageRoot: string,
-  storageKey: string,
-): Promise<void> {
-  const root = resolve(storageRoot);
-  const path = storagePath(root, storageKey);
-  await rm(path, { force: true });
-  if (dirname(path) !== root) {
-    try {
-      await rmdir(dirname(path));
-    } catch (error) {
-      if (
-        !isNodeError(error) ||
-        !["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error.code ?? "")
-      )
-        throw error;
+// Internal callers supply a complete stream. HTTP multipart uses stage/finalize.
+export async function saveUploadStream(input: SaveUploadInput): Promise<SavedUpload> {
+  const staged = await stageUpload({ ...input, maxBytes: 1073741824 });
+  let finalKey: string | undefined;
+  try { return await finalizeUpload(input.storageRoot, staged, key => { finalKey = key; input.onKey?.(key); }); }
+  catch (error) { await discardUpload(input.storageRoot, staged.tempKey).catch(() => {}); if (finalKey) await discardUpload(input.storageRoot, finalKey).catch(() => {}); throw error; }
+}
+export async function openDownloadStream(root: string, key: string): Promise<NodeJS.ReadableStream> {
+  const path = await safePath(root, key), handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try { if (!(await handle.stat()).isFile()) invalid(); return handle.createReadStream(); }
+  catch (error) { await handle.close(); throw error; }
+}
+export async function discardUpload(root: string, key: string): Promise<void> {
+  let path;
+  try { path = await safePath(root, key); }
+  catch (error) { if (nodeCode(error) === "ENOENT") return; throw error; }
+  await unlink(path).catch(error => { if (nodeCode(error) !== "ENOENT") throw error; });
+}
+export const deleteStoredFile = discardUpload;
+export async function storedFileBytes(root: string, key: string): Promise<number> {
+  try { return (await lstat(await safePath(root,key))).size; }
+  catch (error) { if (nodeCode(error) === "ENOENT") return 0; throw error; }
+}
+export async function getStorageUsage(rootInput: string): Promise<{ bytes: number }> {
+  const root = resolve(rootInput);
+  await safeRoot(root);
+  async function count(directory: string): Promise<number> {
+    let total = 0;
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory,entry.name), info = await lstat(path);
+      if (info.isSymbolicLink()) invalid();
+      if (info.isDirectory()) { await safePath(root, path.slice(root.length+1).split(sep).join("/") + "/probe", true); total += await count(path); }
+      else if (info.isFile()) total += info.size;
+      else invalid();
+      if (!Number.isSafeInteger(total)) throw new Error("Storage measurement failed");
     }
+    return total;
   }
+  return { bytes: await count(root) };
 }
-
-export async function getStorageUsage(
-  storageRoot: string,
-): Promise<{ bytes: number }> {
-  return { bytes: await countBytes(resolve(storageRoot)) };
+export async function getFreeDiskBytes(root: string): Promise<number> {
+  await safeRoot(root);
+  const stats = await statfs(root, { bigint: true });
+  return Number(stats.bavail * stats.bsize);
 }
-
-function sanitizeExtension(originalName: string): string {
-  const extension = extname(basename(originalName)).toLowerCase();
-  const safeExtension = extension.replace(/[^.a-z0-9]/g, "");
-  return safeExtension.length > 1 && safeExtension.length <= 16
-    ? safeExtension
-    : "";
+function sanitizeExtension(name: string) {
+  const extension = extname(basename(name.replaceAll("\\", "/"))).toLowerCase();
+  return /^\.[a-z0-9]{1,15}$/.test(extension) ? extension : "";
 }
-
-function storagePath(storageRoot: string, storageKey: string): string {
-  if (storageKey.trim() === "") {
-    throw new Error("Invalid storage key.");
-  }
-  const target = resolve(storageRoot, storageKey);
-  if (target !== storageRoot && !target.startsWith(`${storageRoot}${sep}`)) {
-    throw new Error("Invalid storage key.");
-  }
-  return target;
-}
-
-async function countBytes(directory: string): Promise<number> {
-  let total = 0;
-  let entries;
-  try {
-    entries = await readdir(directory, { withFileTypes: true });
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return 0;
-    }
-    throw error;
-  }
-
-  for (const entry of entries) {
-    const entryPath = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      total += await countBytes(entryPath);
-    } else if (entry.isFile()) {
-      total += (await stat(entryPath)).size;
-    }
-  }
-  return total;
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error;
-}
+function nodeCode(error: unknown): string | undefined { return (error as NodeJS.ErrnoException)?.code; }

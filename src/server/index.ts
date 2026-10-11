@@ -17,6 +17,7 @@ import { checkReadiness } from "./health.js";
 import { EXPECTED_SCHEMA_VERSION } from "./migrate.js";
 import { safeLoggerOptions } from "./logging.js";
 import { sendControlledError } from "./requestPolicy.js";
+import { createUploadRuntime, type UploadRuntime } from "./uploadRuntime.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const currentDir = dirname(currentFile);
@@ -27,9 +28,12 @@ export function buildServer(
     db?: Database;
     loggerStream?: import("node:stream").Writable;
     now?: () => Date;
+    uploadRuntime?: UploadRuntime;
+    files?: Pick<import("./filesRoutes.js").FilesRoutesDependencies, "repo" | "storage" | "uploadIdleTimeoutMs">;
   } = {},
 ) {
   const db = deps.db ?? createDatabase(config.databaseUrl);
+  const uploadRuntime = deps.uploadRuntime ?? createUploadRuntime(config);
   const server = Fastify({
     logger: deps.loggerStream
       ? { ...safeLoggerOptions, stream: deps.loggerStream }
@@ -44,6 +48,8 @@ export function buildServer(
     http: { maxHeaderSize: 16 * 1024 },
   });
   server.setErrorHandler(sendControlledError);
+  server.decorate("uploadRuntime", uploadRuntime);
+  server.addHook("onReady", async () => { await uploadRuntime.rescan(); });
 
   server.get("/api/health", async () => ({
     ok: true,
@@ -76,8 +82,10 @@ export function buildServer(
           `${request.routeOptions.url === "/s/:token" ? "share" : "auth"}:${request.ip}`,
       }),
     );
-    await scope.register(registerAdminRoutes, { config, db });
-    await scope.register(registerFilesRoutes, { config, db, now: deps.now });
+    await scope.register(registerAdminRoutes, { config, db, uploadRuntime });
+    await scope.register(registerFilesRoutes, { config, db, now: deps.now, ...deps.files,
+      admission: uploadRuntime.admission, activeUploads: uploadRuntime.activeUploads,
+      retainUnknown: uploadRuntime.retainUnknown });
     await scope.register(registerShareRoutes, { config, db, now: deps.now });
   });
 
@@ -86,11 +94,13 @@ export function buildServer(
     const cleanupJob = startCleanupExpiredFilesJob({
       intervalMs: cleanupIntervalMs,
       cleanup: async () => {
+        await uploadRuntime.retryUnknown();
         const result = await cleanupExpiredFiles({
           storageRoot: config.storageRoot,
           db,
           batchSize: config.cleanupBatchSize,
         });
+        await uploadRuntime.rescan();
         if (result.failed > 0)
           server.log.error(
             { failed: result.failed },

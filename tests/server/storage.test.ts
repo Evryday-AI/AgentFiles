@@ -8,9 +8,33 @@ import {
   getStorageUsage,
   openDownloadStream,
   saveUploadStream,
+  stageUpload,
+  finalizeUpload,
 } from "../../src/server/storage";
 
 let root = "";
+
+describe("staged validation boundary", () => {
+  it.each([9,10,11])("meters multiple chunks at exact cap: %i", async (size) => {
+    root = await mkdtemp(join(tmpdir(), "agentfiles-"));
+    const stage = stageUpload({storageRoot:root, originalName:"../hostile.PNG", maxBytes:10, stream:Readable.from([Buffer.alloc(4), Buffer.alloc(size-4)])});
+    if(size > 10) {
+      await expect(stage).rejects.toMatchObject({statusCode:413, code:"UPLOAD_TOO_LARGE"});
+      expect(await getStorageUsage(root)).toEqual({bytes:0});
+    } else {
+      const staged = await stage;
+      expect(staged.tempKey).toMatch(/^\.tmp\//);
+      expect(staged.sizeBytes).toBe(size);
+      const final = await finalizeUpload(root,staged);
+      expect(final.storageKey).toMatch(/^files\/[a-f0-9-]{36}\.png$/);
+      await expect(readFile(join(root,staged.tempKey))).rejects.toMatchObject({code:"ENOENT"});
+    }
+  });
+  it.each([".", "./", "/", "C:/absolute", "safe/../safe.txt"])("rejects unsafe key %s", async key => {
+    root = await mkdtemp(join(tmpdir(), "agentfiles-"));
+    await expect(deleteStoredFile(root,key)).rejects.toThrow("Invalid storage key.");
+  });
+});
 
 afterEach(async () => {
   if (root) await rm(root, { recursive: true, force: true });
@@ -41,7 +65,7 @@ describe("saveUploadStream", () => {
       stream: Readable.from(["image"]),
     });
 
-    expect(result.storageKey).toMatch(/^[a-f0-9]{32}\/[a-f0-9]{32}\.png$/);
+    expect(result.storageKey).toMatch(/^files\/[a-f0-9-]{36}\.png$/);
   });
 
   it("uses opaque paths so a repeated code cannot select earlier bytes", async () => {

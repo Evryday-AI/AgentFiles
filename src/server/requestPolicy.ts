@@ -104,11 +104,14 @@ export function sendControlledError(
   _request: FastifyRequest,
   reply: FastifyReply,
 ): FastifyReply {
-  if (error instanceof FilePolicyError)
+  if (error instanceof FilePolicyError) {
+    if (error.statusCode === 408) reply.header("connection", "close");
+    if (["UPLOAD_CONCURRENCY_LIMIT", "CODE_ALLOCATION_RETRY_EXHAUSTED"].includes(error.code ?? "")) reply.header("retry-after", "1");
     return reply.code(error.statusCode).send({
       error: error.message,
       ...(error.code ? { code: error.code } : {}),
     });
+  }
   const status = (error as { statusCode?: number })?.statusCode;
   const statusCode =
     typeof status === "number" && status >= 400 && status < 500 ? status : 500;

@@ -24,7 +24,9 @@ File/share operations return 401 when no principal is resolved and 403 for an in
 
 ## File requests and response
 
-Upload uses multipart/form-data with one `file` part. Omit the optional `durable` field for ordinary temporary storage. Form booleans accept `true`/`1`/`on` or `false`/`0`/`off`. MAX_UPLOAD_BYTES controls the per-file size (1 GiB default), with one file, 20 fields, 4 KiB per field and 25 total parts. Only file and the optional durable field are accepted; unknown or duplicate fields and malformed booleans return 400. Filenames must be nonempty, at most 1024 UTF-8 bytes and contain no NUL. Capacity and concurrent-upload admission remain C2 work.
+Upload uses multipart/form-data with one `file` part. Omit the optional `durable` field for ordinary temporary storage. Form booleans accept `true`/`1`/`on` or `false`/`0`/`off`. MAX_UPLOAD_BYTES controls the per-file size (1 GiB default), with one file, 20 fields, 4 KiB per field and 25 total parts. Only file and the optional durable field are accepted; unknown or duplicate fields and malformed booleans return 400. Filenames must be nonempty, at most 1024 UTF-8 bytes and contain no NUL. A stream meter accepts the exact byte limit and rejects excess bytes, independently of Content-Length. Bytes stay temporary until the complete multipart request and persistence intent pass validation; parser truncation cannot return 201.
+
+Admission reserves MAX_UPLOAD_BYTES before streaming and holds the slot through confirmed metadata commit or compensation. A small file can be rejected when its worst-case reservation cannot fit the managed ceiling or free-disk reserve. Slots return 429 UPLOAD_CONCURRENCY_LIMIT with Retry-After: 1; unavailable capacity returns 507 STORAGE_CAPACITY_EXCEEDED. Failed compensation bytes remain charged. A 30-second idle upload returns 408 UPLOAD_IDLE_TIMEOUT and closes the connection. An unresolved database commit returns 503 UPLOAD_OUTCOME_UNKNOWN, protecting bytes and its reservation until ownership reconciliation; never automatically retry POST.
 
 `GET /api/files` accepts `limit`, `offset`, and `durable` query parameters. Default limit is 100 (accepted range 1-500), and default offset is zero (accepted range 0-2147483647). Decimal integer query values are strict; malformed/out-of-range values and unknown parameters return 400. `durable` preserves the form boolean aliases above. Lists include only active, non-deleted, unexpired rows. For reconciliation, pagination is necessary and a mutable list is not a snapshot.
 
@@ -73,14 +75,15 @@ Application errors generally use `{error: string}`; framework error responses ma
 | 409 | File deletion is in progress; retention cannot restore it. |
 | 410 | Expired/claimed file before finalization; unavailable public share. |
 | 413 | Multipart/file upload limit; reduce input or review settings. |
-| 429 | Rate limiter rejection; honor `Retry-After` if supplied. Login is limited to five/minute/IP, authentication resolution and public share downloads to separate 120/minute/IP buckets, and uploads to 30/minute/principal. |
+| 408 | Incomplete idle upload; inspect the outcome before any new attempt. |
+| 429 | Rate or upload concurrency rejection; honor `Retry-After`. Login is limited to five/minute/IP, authentication resolution and public share downloads to separate 120/minute/IP buckets, and uploads to 30/minute/principal. |
 | 500 | Operation failure; reconcile uncertain mutations before repeating. |
-| 507 | Code namespace exhausted; storage-capacity admission remains C2 work. |
-| 503 | Readiness failure or code allocation retries exhausted; stop and reconcile. |
+| 507 | STORAGE_CAPACITY_EXCEEDED: unavailable byte headroom; CODE_SPACE_EXHAUSTED: permanent code namespace full, requiring operator intervention. |
+| 503 | Readiness failure, bounded code-allocation retry exhaustion (Retry-After: 1), or UPLOAD_OUTCOME_UNKNOWN; stop and reconcile uncertain uploads. |
 
 A temporary file with an expiry is unavailable at its expiry even before cleanup; after metadata is hidden/removed, lookup becomes 404. Non-durable null expiry fails closed and violates the schema constraint. No example should infer persistence from a null expiry without checking the durable flag.
 
-`GET /api/health` is unauthenticated process liveness `{ok, service}`, not database/schema readiness. `POST /api/auth/login` accepts administrator credentials and sets the signed HttpOnly SameSite=Lax cookie; `POST /api/auth/logout` revokes and clears it. `/api/admin/api-keys` and its `/:id` mutations are administrator-only; created key secrets are returned once. `GET /api/admin/storage-usage` is administrator-only and returns `{bytes}`. These browser/admin operations are outside the portable examples.
+`GET /api/health` is unauthenticated process liveness `{ok, service}`, not database/schema readiness. `POST /api/auth/login` accepts administrator credentials and sets the signed HttpOnly SameSite=Lax cookie; `POST /api/auth/logout` revokes and clears it. `/api/admin/api-keys` and its `/:id` mutations are administrator-only; created key secrets are returned once. `GET /api/admin/storage-usage` is administrator-only and returns `bytes` plus `managedBytes`, `reservedBytes`, `active`, `unresolvedUploads` and `maxStorageBytes`. The disk measurement includes temporary/orphan bytes; reservations include protected uncertain uploads. These browser/admin operations are outside the portable examples.
 
 GET /api/ready checks schema version 3 and migration checksums with a bounded deadline. GET /api/instance, static skill download and a validated OpenAPI specification remain later work. The source-derived examples in [agents.md](agents.md) use `/api/auth/session` now. A timeout or unverifiable response after upload is an unknown outcome, with no idempotency guarantee: never blindly repeat POST; reconcile through authorized metadata/list access or ask the requester when safe reconciliation is impossible.
 
