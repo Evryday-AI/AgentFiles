@@ -1,6 +1,6 @@
 # Configuration
 
-AgentFiles is in preparation. This configuration contract is implemented; complete clean-install and release acceptance remain pending. The settings below do not establish an installable release. See the [release checklist](release-checklist.md).
+AgentFiles is in preparation. This configuration contract is implemented and [Phase B](verification/phase-b.md) exercised a fresh local Compose installation. Complete lifecycle and release acceptance remain pending. The settings below do not establish an installable release. See the [release checklist](release-checklist.md).
 
 Every application setting and every Compose-only input below requires restarting the affected service after a change. Configuration errors name the setting and omit its supplied value. The server does not automatically read `.env`; the caller must supply environment variables explicitly.
 
@@ -48,7 +48,7 @@ The [administrator setup command](setup.md) generates new secrets and an Argon2i
 
 ## Explicit environment loading
 
-Compose must pass the container environment through `env_file: .env`. Its database hostname is `db`, internal to that Compose network. `POSTGRES_PASSWORD` initializes the owned database; setup must encode the same password into `DATABASE_URL`. These details remain subject to the fresh Compose smoke tests.
+Compose passes the container environment through `env_file: .env`. Its database hostname is `db`, internal to that Compose network. `POSTGRES_PASSWORD` initializes the owned database; setup encodes the same password into `DATABASE_URL`. The [fresh Compose smoke](self-hosting.md) verifies this path. Compose fixes container `PORT` to 3000 and `STORAGE_ROOT` to `/data/storage`; `APP_PORT` controls the loopback host port. These overrides preserve the health checks and owned mount; native operation can choose different values.
 
 Native development uses a separately authored, ignored `.env.development.local` containing an independent host-reachable database URL and an app-owned host storage directory. Do not use the container-only `db` hostname on the host. Run `npm run dev:server`; its command is:
 
@@ -63,7 +63,7 @@ node --env-file=.env.native.local dist/server/migrate.js
 node --env-file=.env.native.local dist/server/index.js
 ```
 
-Supply the settings above in that ignored file. Existing exported environment variables take precedence over Node's env file. Single-quote Argon2 hashes and database URLs in environment files; this preserves literal dollar signs and avoids Compose interpolation. Setup generates hex credentials without shell metacharacters. Setup's literal dollar/hash/space/double-quote/interior-backslash encoding and Argon2 hashes have been checked with Node and the isolated Compose tool environment. Setup rejects apostrophes, control characters and odd trailing backslashes in administrator names because parser escaping differs. Full runtime Compose validation remains an installation acceptance step. Never log secret values while checking escaping.
+Supply the settings above in that ignored file. Existing exported environment variables take precedence over Node's env file. Single-quote Argon2 hashes and database URLs in environment files; this preserves literal dollar signs and avoids Compose interpolation. Setup generates hex credentials without shell metacharacters. Setup's literal dollar/hash/space/double-quote/interior-backslash encoding and Argon2 hashes have been checked with Node and the isolated Compose tool environment. Setup rejects apostrophes, control characters and odd trailing backslashes in administrator names because parser escaping differs. Runtime Compose validation and an actual dollar-containing administrator login are recorded in [Phase B evidence](verification/phase-b.md). Never log secret values while checking escaping.
 
 An existing external Postgres server is an advanced independent runtime option. Use a dedicated database/account, the appropriate TLS connection parameters and a host reachable from the chosen runtime. It requires no maintainer network, shared database or hosted account. Only one app process should own the storage volume.
 

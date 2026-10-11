@@ -4,6 +4,10 @@
 !package.json
 !package-lock.json
 !Dockerfile.setup
+!Dockerfile
+!tsconfig.json
+!tsconfig.client.json
+!vite.config.ts
 !LICENSE
 !THIRD_PARTY_NOTICES.md
 !scripts/
@@ -13,5 +17,11 @@ scripts/**
 !src/
 src/**
 !src/server/
-src/server/**
-!src/server/originPolicy.ts
+!src/server/**
+!src/client/
+!src/client/**
+!skills/
+skills/**
+!skills/agentfiles/
+!skills/agentfiles/**
+# Tests never enter either build context; only reviewed build/setup inputs above.

@@ -1,6 +1,6 @@
 # Administrator setup
 
-AgentFiles remains in preparation. This setup command is implemented; complete installation and release acceptance are pending in the [release checklist](release-checklist.md).
+AgentFiles remains in preparation. This setup command is implemented, and [Phase B evidence](verification/phase-b.md) records a fresh local Compose exercise. Complete lifecycle and release acceptance remain pending in the [release checklist](release-checklist.md). Continue with [self-hosting](self-hosting.md) after setup.
 
 Setup creates a private `.env` with a new Argon2id administrator password hash, independent 32-byte database and session secrets, and the configuration defaults. It starts no database or application. The deployment database URL addresses the owned Compose service `db`, and storage uses `/data/storage`. Native operation requires an independently authored host configuration as described in [configuration](configuration.md).
 
