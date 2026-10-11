@@ -1,6 +1,6 @@
 # AgentFiles MIT self-hosted implementation plan
 
-> **For agentic workers:** Phases A (A1–A3) and B (B1–B4) are implemented locally; use `executing-plans` and track checkbox steps. The owner authorizes MIT licensing and import of their original code within that reviewed scope; pushing or publishing source requires a separate instruction. Continue individual content/provenance and third-party notice checks. Phases C–E require later review and execution; do not start them under Phase B authorization. Production runtime migration and deployment are outside this authorization.
+> **For agentic workers:** Phases A (A1–A3), B (B1–B4) and C (C1–C3) are implemented locally; use `executing-plans` and track checkbox steps. The owner authorizes MIT licensing and import of their original code within that reviewed scope; pushing or publishing source requires a separate instruction. Continue individual content/provenance and third-party notice checks. Phases D–E require later authorization and execution; Phase C authorization does not start them. Production runtime migration and deployment are outside this authorization.
 
 **Goal:** Release a complete independent MIT file handoff app that a stranger can install, connect to a generic HTTP-capable agent, and use on a phone.
 
@@ -34,7 +34,7 @@ Read [design](../specs/2026-10-10-agentfiles-open-source-design.md), [findings/r
 | D | D1–D2 | OpenAPI, real agent clients, browser/phone handoff | [Agent and browser](2026-10-10-agentfiles-phase-d.md) |
 | E | E1–E3 | CI, upgrade/restore, clean public-clone release acceptance | [Release](2026-10-10-agentfiles-phase-e.md) |
 
-Each task ends with checks and an explicit-path commit. Review each phase before the next. Current approved implementation boundary: **A1–A3 and B1–B4, implemented locally**, with [Phase A evidence](../../verification/phase-a.md) and [Phase B evidence](../../verification/phase-b.md). C–E remain pending; Phase B installation checks do not establish release acceptance.
+Each task ends with checks and an explicit-path commit. Review each phase before the next. Current approved implementation boundary: **A1–A3, B1–B4 and C1–C3, implemented and reviewed locally**, with [Phase A evidence](../../verification/phase-a.md), [Phase B evidence](../../verification/phase-b.md) and [Phase C evidence](../../verification/phase-c.md). D–E remain pending; local phase checks do not establish release acceptance.
 
 ## Shared interface decisions
 

@@ -1,6 +1,6 @@
 # Configuration
 
-AgentFiles is in preparation. This configuration contract is implemented and [Phase B](verification/phase-b.md) exercised a fresh local Compose installation. Phase C lifecycle evidence is recorded in [Phase C verification](verification/phase-c.md); final review and release acceptance remain pending. The settings below do not establish an installable release. See the [release checklist](release-checklist.md).
+AgentFiles is in preparation. This configuration contract is implemented and [Phase B](verification/phase-b.md) exercised a fresh local Compose installation. Phase C lifecycle evidence is recorded in [Phase C verification](verification/phase-c.md); release acceptance remains pending. The settings below do not establish an installable release. See the [release checklist](release-checklist.md).
 
 Every application setting and every Compose-only input below requires restarting the affected service after a change. Configuration errors name the setting and omit its supplied value. The server does not automatically read `.env`; the caller must supply environment variables explicitly.
 

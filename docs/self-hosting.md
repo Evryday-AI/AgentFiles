@@ -1,6 +1,6 @@
 # Self-hosting preparation
 
-AgentFiles remains in preparation. Phase B has a verified fresh local installation on Docker Desktop with Linux amd64 containers. Lifecycle hardening has [Phase C evidence](verification/phase-c.md) awaiting final review; agent/browser checks, upgrade/restore and final release acceptance remain pending in the [release checklist](release-checklist.md). These instructions describe the tested installation workflow, not a production-ready release.
+AgentFiles remains in preparation. Phase B has a verified fresh local installation on Docker Desktop with Linux amd64 containers. Lifecycle hardening has [Phase C evidence](verification/phase-c.md) reviewed locally; agent/browser checks, upgrade/restore and final release acceptance remain pending in the [release checklist](release-checklist.md). These instructions describe the tested installation workflow, not a production-ready release.
 
 ## Prerequisites and isolation
 

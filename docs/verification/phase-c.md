@@ -1,6 +1,6 @@
-# Phase C: authorization, capacity and lifecycle evidence (draft)
+# Phase C: authorization, capacity and lifecycle evidence
 
-Dates: initial verification 2026-10-10; C3 and final admission review-fix completion 2026-10-11. This draft records the C1/C2 baseline, C3 implementation and final public-share admission verification. Controller final review, staged diff inspection and secret/private-identifier scans of the final candidate remain pending. Release checklist boxes remain unchanged. AgentFiles remains in preparation; this is not installable-release, deployment, public HTTPS, native Linux host or phone-access acceptance.
+Verification dates: 2026-10-10 and 2026-10-11. C1–C3 are implemented and reviewed locally. Task reviews, complete staged-diff inspection and the final whole-branch review passed after the documented fixes; final secret/private-identifier scans found no matches. Release checklist boxes remain unchanged. AgentFiles remains in preparation; this is not installable-release, deployment, public HTTPS, native Linux host or phone-access acceptance.
 
 ## Executed verification
 
@@ -8,15 +8,15 @@ The host ran Node 24.21.0/npm 11.19.0 on Windows. Real integration tests used an
 
 | Command or check | Observed result |
 | --- | --- |
-| `npm test` | October 11 final admission-fix run: 358 passed, 2 explicit POSIX skips; 360 tests in 25 files. |
-| `node node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts` through the isolated fixture launcher | October 11 final admission-fix combined run: 114 passed, 1 Windows symlink skip; 115 tests in 8 files, 74.69 seconds. Includes all C1/C2/C3 integration cases and 14 focused public-share admission cases. |
-| `npm run typecheck` | October 11 final admission-fix run: server and client typechecks exited 0. |
-| `npm run build` | October 11 final admission-fix run: client/server build and SQL copy exited 0. |
+| `npm test` | October 11 final controller run: 358 passed, 2 explicit POSIX skips; 360 tests in 25 files. |
+| `node node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts` through the isolated fixture launcher | October 11 final controller combined run: 114 passed, 1 Windows symlink skip; 115 tests in 8 files, 78.20 seconds, exit 0. Includes all C1/C2/C3 integration cases and 14 focused public-share admission cases. |
+| `npm run typecheck` | October 11 final controller run: server and client typechecks exited 0. |
+| `npm run build` | October 11 final controller run: client/server build and SQL copy exited 0. |
 | `node scripts/smoke-compose.mjs` | October 10 pre-review run: ten real Compose scenarios passed; owned disposable services/networks/volumes removed. Review fixes did not change startup/schema/configuration behavior, so this check was not repeated. |
 | Controller Linux container: `node node_modules/vitest/vitest.mjs run --configLoader runner tests/server/storage.test.ts tests/server/storageFailures.test.ts tests/server/uploadAdmission.test.ts tests/server/activeUploads.test.ts tests/server/reconciliation.test.ts` | October 10: 34 passed in 5 files, no skips; nonroot node, read-only image, no network, writable tmpfs. Actual POSIX staging/final directory and file modes and symlink cases executed. Storage/reconciliation helpers remain unchanged by the review fixes; this check was not repeated. |
-| Applied migrations `001`/`002`/`003` compared with reviewed C1/C2 baseline | Unchanged byte-for-byte; only new `004_maintenance.sql` added. Readiness expects version 4 and checksum continuity. |
+| Applied migrations `001`/`002`/`003` compared with reviewed C1/C2 baseline | Tracked Git blobs unchanged byte-for-byte; only new `004_maintenance.sql` added. Windows working-copy line-ending normalization is separate from tracked migration contents. Readiness expects version 4 and checksum continuity. |
 
-The unit skips are the POSIX mode and symlink assertions in `reconciliation.test.ts`; those executed in the controller's Linux run. The integration skip is `does not traverse symlink bait during reconciliation` in `maintenance.test.ts`. The controller additionally ran that focused case against real PostgreSQL in a nonroot pinned Linux builder with read-only root and private tmpfs: 1 passed, 13 unrelated cases filtered. It shared only the network namespace of the label-verified owned PostgreSQL fixture, with no database-data mount; its image and temporary environment file were removed. Controller final full-diff/security checks remain pending.
+The unit skips are the POSIX mode and symlink assertions in `reconciliation.test.ts`; those executed in the controller's Linux run. The integration skip is `does not traverse symlink bait during reconciliation` in `maintenance.test.ts`. The controller additionally ran that focused case against real PostgreSQL in a nonroot pinned Linux builder with read-only root and private tmpfs: 1 passed, 13 unrelated cases filtered. It shared only the network namespace of the label-verified owned PostgreSQL fixture, with no database-data mount; its image and temporary environment file were removed. Controller full-diff/security checks passed as recorded below.
 
 Compose exercised fresh build/migration/start gates, loopback/no-database-port topology, real administrator login and exact upload/download bytes, database outage readiness, app recreation with preserved bytes/session, SIGINT/SIGTERM drain, wrong-owner/world-writable storage refusal, checksum failure blocking startup, and the complete external-database alternative. The external alternative uses its own database as well as its own storage volume so the persistent database/volume pairing remains meaningful. These graceful signal checks do not simulate an abrupt process crash.
 
@@ -52,10 +52,33 @@ Admission now locks file first and share second, checks current eligibility and 
 
 The final focused run passed 14 cases; the final combined run above includes them all. It covers exact/past expiry, revocation, file expiry and deletion claims during actual lock waits; an exhausted ten-client pool wait; share/file expiry after SQL but before opening; eight concurrent requests capped at two successes; microsecond boundaries; storage-open failure; before/after-COMMIT reply failures; and an admitted stream completing after expiry/revocation while the SQL locks are released. Denials assert zero counts and no storage-open calls; lock races also assert final SQL claim/revocation state and retained real fixture bytes. Stream and commit failures use explicit adapters, not process-kill simulations. Existing suites retain actual filesystem download coverage.
 
-The optional upload accounting/test readability finding was also resolved with formatting only, covered by existing unit and real-PG upload tests. The final source change leaves migrations 001–004, startup and configuration behavior unchanged. Earlier Linux/Compose evidence therefore remains applicable within its stated scope; those checks were not repeated. Controller final review/scans and the Phase C gate remain pending.
+The optional upload accounting/test readability finding was also resolved with formatting only, covered by existing unit and real-PG upload tests. The final source change leaves migrations 001–004, startup and configuration behavior unchanged. Earlier Linux/Compose evidence therefore remains applicable within its stated scope; those checks were not repeated. Controller final review/scans and the Phase C gate passed. No Critical or Important findings remain; the final documentation encoding finding was corrected.
 
 ## Limits and remaining acceptance
 
 The supported capacity/maintenance model is one app process with an exclusively owned volume; multi-process writers and adversarial inode swaps are unsupported. Failure health counters and sweep cursors are process-local; durable claims and code reservations persist. Database/disk failures can extend reclamation indefinitely. Event failures require review; there is no guaranteed event replay queue or every-byte download audit.
 
-Windows tests and Linux containers do not establish native Linux host setup, other architectures or every filesystem's durability. Abrupt process termination, power loss, release upgrades/restores, public clone/build/CI/artifact acceptance and browser/agent/phone workflows remain D/E work. Historical Phase A/B evidence remains historical. Final controller review/scans and release acceptance are pending.
+Windows tests and Linux containers do not establish native Linux host setup, other architectures or every filesystem's durability. Abrupt process termination, power loss, release upgrades/restores, public clone/build/CI/artifact acceptance and browser/agent/phone workflows remain D/E work. Historical Phase A/B evidence remains historical. Release acceptance remains pending.
+
+## Authorization and bounded upload evidence
+
+C1's initial regression run had nine meaningful failures and three already-correct boundary cases. Final coverage uses actual permission-scoped keys and signed administrator cookies: anonymous, malformed/revoked keys, each permission, expired/revoked sessions, invalid Bearer plus valid cookie, explicit persistence denial and origin denials. Denied mutations preserve SQL and disk. A session expiring during a file-row lock wait is checked with database wall time after the wait. Captured actual Pino JSON omits synthetic credential, cookie, share-token, query and filesystem-path sentinels. A narrow local Chromium login/gallery/larger-preview check decoded synthetic raster images with zero CSP violations; a favicon 404 was observed. This establishes only C1 CSP compatibility, not D2 browser/phone acceptance.
+
+C2's 27 real upload integration cases cover chunked cap-minus-one, exact-cap and cap-plus-one bytes, lying content length, parser/truncation/extra-field rejection, client abort, idle timeout and denied persistence after the file part. No rejected request allocates metadata or issued codes. With a 150-byte managed ceiling and 100-byte worst-case reservation, exactly one of two contenders enters; four SQL-stalled reservations admit four requests and the fifth receives 429. Failed compensation remains charged. Fresh process accounting includes abandoned bytes. Capacity/expiry never promotes a temporary file to permanent storage.
+
+Actual concurrent allocation collisions preserve both unrelated contents. Thirty-two failed canonical candidates return 503 retry exhaustion; a complete reduced canonical namespace fixture proves the distinct 507 full-space path. Registry plus metadata commit atomically. Before/after-COMMIT faults and real pending transactions prove that unlocked absence is insufficient for compensation; retained paths/reservations survive until the storage-key transaction lock establishes the outcome. A dedicated child performs a controlled exit after final bytes and before metadata, followed by fresh-server recount. This is a controlled interruption experiment, not an OS crash or power-loss test. A separate exact C2 committed-tree Linux run passed 29 storage/admission/lease cases with no skips.
+
+All checks use new synthetic bytes and credentials. Measured free-disk failure adapters and actual capacity reservation tests do not establish physical ENOSPC behavior on every supported filesystem. Absolute filesystem containment, native Windows junction rejection and Linux symlink/no-follow checks executed; hostile concurrent external writers remain outside the single-process, exclusively owned mount model.
+
+## Review, privacy and local commits
+
+The branch started from clean Phase B commit `b4c99bb`. Local implementation commits:
+
+- `d6d2c5f` fix: enforce standalone authorization and temporary-file invariants
+- `8b8db75` fix: bound streamed uploads and finalize after request validation
+- `4fd2f94` feat: reconcile abandoned files and expose retention maintenance health
+- `102b34b` fix: revalidate public share admission under row locks
+
+C1 review required database wall-time session expiry after a row-lock wait; a fresh fix and re-review passed. C2 review approved the implementation and noted dense formatting; C3 expanded the touched production paths. C3 review required progressing detail purge, recovered-upload creation events, real-byte permanent-prefix fairness and both disabling-persistence rejection orders; the covering regressions and re-review passed. The final whole-branch review evaluated the complete C1–C3 diff and required the fresh public-share admission fix above. Re-review approved that complete fix package with no Critical or Important findings. Its named readability finding was resolved, and the nonblocking evidence encoding finding was corrected.
+
+Every implementation and evidence commit uses the approved public noreply identity. Exact staged exports passed redacted Gitleaks and private-identifier checks; the complete tracked tree and Git history were scanned with no matches. Local Markdown links and Git whitespace checks passed. Generated fixtures, raw reports, credentials and screenshots remain ignored. Owned PostgreSQL/Linux/Compose resources were removed after verification. No private source import, push, PR, source publication or deployment occurred in Phase C.
