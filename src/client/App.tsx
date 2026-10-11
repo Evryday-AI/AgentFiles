@@ -26,6 +26,10 @@ export function App() {
   const [instance, setInstance] = useState<InstanceInfo | null>(null);
   const sessionGeneration = useRef(0);
   const selectionGeneration = useRef(0);
+  const failedLookupSelection = useRef<{
+    requested: number;
+    cleared: number;
+  } | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -150,10 +154,16 @@ export function App() {
         current && !options.preserveLookup
           ? await prependSelectedFile(listedFiles, current)
           : listedFiles;
+      const clearedByLookup =
+        options.preserveLookup &&
+        failedLookupSelection.current?.requested === selection &&
+        failedLookupSelection.current.cleared === selectionGeneration.current &&
+        selectedCodeRef.current === null;
       if (
         generation !== sessionGeneration.current ||
-        selection !== selectionGeneration.current ||
-        current !== selectedCodeRef.current
+        (!clearedByLookup &&
+          (selection !== selectionGeneration.current ||
+            current !== selectedCodeRef.current))
       )
         return;
       if (options.preserveLookup) {
@@ -255,6 +265,7 @@ export function App() {
     next: string | null | ((current: string | null) => string | null),
   ) {
     selectionGeneration.current++;
+    failedLookupSelection.current = null;
     const resolved =
       typeof next === "function" ? next(selectedCodeRef.current) : next;
     selectedCodeRef.current = resolved;
@@ -288,6 +299,10 @@ export function App() {
         return;
       setError(fileError(error));
       updateSelectedCode(null);
+      failedLookupSelection.current = {
+        requested: selection,
+        cleared: selectionGeneration.current,
+      };
       setFiles((items) => items.filter((item) => item.code !== code));
     }
   }
@@ -325,6 +340,9 @@ export function App() {
     );
   }
 
+  const canChangeRetention =
+    principal.type === "admin" || principal.canMarkDurable;
+  const canPersist = !!instance?.allow_persistent_files && canChangeRetention;
   const selectedInlineDetail =
     activeTab !== "settings" && compact ? (
       <FileDetail
@@ -337,10 +355,8 @@ export function App() {
           if (renderSession === sessionGeneration.current)
             handleFileMutation(code, file);
         }}
-        canPersist={
-          !!instance?.allow_persistent_files &&
-          (principal.type === "admin" || principal.canMarkDurable)
-        }
+        canChangeRetention={canChangeRetention}
+        canPersist={canPersist}
       />
     ) : null;
   const selectedDesktopDetail =
@@ -355,10 +371,8 @@ export function App() {
           if (renderSession === sessionGeneration.current)
             handleFileMutation(code, file);
         }}
-        canPersist={
-          !!instance?.allow_persistent_files &&
-          (principal.type === "admin" || principal.canMarkDurable)
-        }
+        canChangeRetention={canChangeRetention}
+        canPersist={canPersist}
       />
     ) : null;
 
@@ -379,10 +393,7 @@ export function App() {
 
       <div hidden={activeTab === "settings"}>
         <UploadPanel
-          canPersist={
-            !!instance?.allow_persistent_files &&
-            (principal.type === "admin" || principal.canMarkDurable)
-          }
+          canPersist={canPersist}
           onCopy={copyValue}
           onError={setError}
           onUploaded={(files) => {

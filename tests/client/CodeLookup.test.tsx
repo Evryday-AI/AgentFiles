@@ -135,6 +135,7 @@ it("closes the native preview when the selected file changes", async () => {
     onClose: () => {},
     onError,
     onMutated,
+    canChangeRetention: false,
     canPersist: false,
   };
   const v = await render(
@@ -272,4 +273,81 @@ it("keeps initial exact metadata when a slow list returns stale metadata for the
     );
     await view.unmount();
   }
+});
+
+it.each([
+  [404, "missing"],
+  [410, "expired"],
+])(
+  "keeps unrelated list results after a fast initial metadata %i",
+  async (status, message) => {
+    setup(Number(status));
+    history.replaceState(null, "", `/files/${file.code}`);
+    const other = { ...file, code: "F-XYZ23", name: "unrelated.txt" };
+    const previous = fetch;
+    let finishList!: (value: Response) => void;
+    vi.stubGlobal("fetch", (url: string, init: RequestInit) =>
+      url.startsWith("/api/files?")
+        ? new Promise<Response>((resolve) => {
+            finishList = resolve;
+          })
+        : previous(url, init),
+    );
+    const view = await render(<App />);
+    try {
+      expect(view.host.querySelector('[role="alert"]')?.textContent).toContain(
+        message,
+      );
+      await act(async () =>
+        finishList(new Response(JSON.stringify({ files: [file, other] }))),
+      );
+      expect(
+        view.host.querySelector(".file-tile .file-name-button")?.textContent,
+      ).toBe(other.name);
+      expect(view.host.querySelector('[role="alert"]')?.textContent).toContain(
+        message,
+      );
+      expect(view.host.querySelector('[aria-label="File detail"]')).toBeNull();
+      expect(view.host.textContent).not.toContain(file.name);
+    } finally {
+      await act(async () =>
+        finishList(new Response(JSON.stringify({ files: [] }))),
+      );
+      await view.unmount();
+    }
+  },
+);
+it("does not merge an old initial list over a newer selection after an initial failure", async () => {
+  setup(404);
+  history.replaceState(null, "", `/files/${file.code}`);
+  const other = { ...file, code: "F-XYZ23", name: "new exact result.txt" };
+  const previous = fetch;
+  let finishList!: (value: Response) => void;
+  vi.stubGlobal("fetch", (url: string, init: RequestInit) =>
+    url.startsWith("/api/files?")
+      ? new Promise<Response>((resolve) => {
+          finishList = resolve;
+        })
+      : url === `/api/files/${other.code}`
+        ? Promise.resolve(new Response(JSON.stringify(other)))
+        : previous(url, init),
+  );
+  const view = await render(<App />);
+  await input(view.host, "File code", other.code);
+  await click(view.host, "Find file");
+  await act(async () =>
+    finishList(
+      new Response(
+        JSON.stringify({
+          files: [file, { ...other, name: "stale list result.txt" }],
+        }),
+      ),
+    ),
+  );
+  expect(
+    view.host.querySelector('[aria-label="File detail"]')?.textContent,
+  ).toContain(other.name);
+  expect(view.host.textContent).not.toContain("stale list result.txt");
+  expect(view.host.querySelector('[role="alert"]')).toBeNull();
+  await view.unmount();
 });

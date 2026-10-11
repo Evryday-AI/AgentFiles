@@ -15,6 +15,7 @@ import {
 interface FileDetailProps {
   file: FileItem | null;
   onClose: () => void;
+  canChangeRetention: boolean;
   canPersist: boolean;
   onCopy: (value: string, label: string, sourceCode?: string) => void;
   onError: (message: string) => void;
@@ -28,6 +29,7 @@ export function FileDetail({
   onError,
   onMutated,
   canPersist,
+  canChangeRetention,
 }: FileDetailProps) {
   const previewDialog = useRef<HTMLDialogElement>(null);
   const [expanded, setExpanded] = useState(false);
@@ -71,7 +73,8 @@ export function FileDetail({
   }
 
   async function handleDurable() {
-    if (!file) return;
+    if (!file || busy || !canChangeRetention || (!file.durable && !canPersist))
+      return;
     const actedCode = file.code;
     setBusy(true);
     try {
@@ -291,7 +294,9 @@ export function FileDetail({
           Download
         </a>
         <button
-          disabled={busy || !canPersist}
+          disabled={
+            busy || !canChangeRetention || (!file.durable && !canPersist)
+          }
           type="button"
           onClick={handleDurable}
         >
