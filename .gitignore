@@ -3,6 +3,7 @@
 !.env.example
 *.local
 .private/
+.superpowers/
 .worktrees/
 .codebase-memory/
 .playwright-mcp/

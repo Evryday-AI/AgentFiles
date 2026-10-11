@@ -7,6 +7,7 @@
     "node": ">=24 <25"
   },
   "scripts": {
+    "setup": "node scripts/setup.mjs",
     "dev": "concurrently -n server,client -c blue,green \"npm run dev:server\" \"npm run dev:client\"",
     "dev:server": "node --env-file=.env.development.local --import tsx --watch src/server/index.ts",
     "dev:client": "vite --host 127.0.0.1",

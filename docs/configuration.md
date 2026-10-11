@@ -44,7 +44,7 @@ All numbers use decimal integer notation. Whitespace, exponent notation, hexadec
 
 Capacity, persistence authorization, orphan recovery, deletion arbitration, and metadata/event purge settings are validated now; full lifecycle enforcement is scheduled for Phase C. Existing cleanup uses the configured interval. No setting permits issued-code reuse or purging the permanent code-only registry; its schema and allocation guarantees also belong to Phase C. Changes here never silently make temporary files permanent.
 
-Setup must generate new secrets and an Argon2id administrator hash. `GENERATE_WITH_SETUP` is an invalid sentinel, never a usable credential. Length and encoding checks cannot prove randomness; generate session secrets with a cryptographic generator, preferably 32 bytes as hex. Never pass secrets through `VITE_` variables: those become browser build data.
+The [administrator setup command](setup.md) generates new secrets and an Argon2id administrator hash through an isolated Docker tool or host Node fallback. `GENERATE_WITH_SETUP` is an invalid sentinel, never a usable credential. Length and encoding checks cannot prove randomness; generate session secrets with a cryptographic generator, preferably 32 bytes as hex. Never pass secrets through `VITE_` variables: those become browser build data.
 
 ## Explicit environment loading
 
@@ -63,7 +63,7 @@ node --env-file=.env.native.local dist/server/migrate.js
 node --env-file=.env.native.local dist/server/index.js
 ```
 
-Supply the settings above in that ignored file. Existing exported environment variables take precedence over Node's env file. Single-quote Argon2 hashes and database URLs in environment files; this preserves literal dollar signs and avoids Compose interpolation. Setup generates hex credentials without shell metacharacters. Native parsing is tested separately from Compose/tool-container parsing, whose evidence belongs to setup acceptance. Never log secret values while checking escaping.
+Supply the settings above in that ignored file. Existing exported environment variables take precedence over Node's env file. Single-quote Argon2 hashes and database URLs in environment files; this preserves literal dollar signs and avoids Compose interpolation. Setup generates hex credentials without shell metacharacters. Setup's literal dollar/hash/space/double-quote/interior-backslash encoding and Argon2 hashes have been checked with Node and the isolated Compose tool environment. Setup rejects apostrophes, control characters and odd trailing backslashes in administrator names because parser escaping differs. Full runtime Compose validation remains an installation acceptance step. Never log secret values while checking escaping.
 
 An existing external Postgres server is an advanced independent runtime option. Use a dedicated database/account, the appropriate TLS connection parameters and a host reachable from the chosen runtime. It requires no maintainer network, shared database or hosted account. Only one app process should own the storage volume.
 
