@@ -123,4 +123,43 @@ describe('exclusive setup configuration', () => {
     expect(result.stdout + result.stderr).not.toContain('synthetic cancel secret');
     await expect(readFile(join(root, '.env'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
+  it.each(['Ctrl+C', 'Ctrl+D', 'end', 'error', 'queued end', 'queued error'])('cancels when final confirmation and %s arrive together', async (interruption) => {
+    const adapter = join(root, 'terminal-adapter.mjs');
+    await writeFile(adapter, `
+      Object.defineProperty(process.stdin, 'isTTY', {value: true});
+      Object.defineProperty(process.stdout, 'isTTY', {value: true});
+      process.stdin.isRaw = false;
+      process.stdin.setRawMode = (raw) => {
+        process.stdin.isRaw = raw;
+        if (!raw) process.stderr.write('Terminal restored\\n');
+        return process.stdin;
+      };
+      process.stdin.resume = () => process.stdin;
+      const originalWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (value, ...args) => {
+        const result = originalWrite(value, ...args);
+        if (String(value).endsWith(': ')) queueMicrotask(() => {
+          const secret = 'synthetic cancel secret';
+          const final = String(value).startsWith('Confirm password');
+          const line = final || String(value).startsWith('Administrator password') ? secret : '';
+          const interruption = ${JSON.stringify(interruption)};
+          const control = final && interruption === 'Ctrl+C' ? '\\x03' : final && interruption === 'Ctrl+D' ? '\\x04' : '';
+          process.stdin.emit('data', line + '\\r' + control);
+          if (final && interruption === 'end') process.stdin.emit('end');
+          if (final && interruption === 'error') process.stdin.emit('error', new Error(secret));
+          if (final && interruption === 'queued end') queueMicrotask(() => process.stdin.emit('end'));
+          if (final && interruption === 'queued error') queueMicrotask(() => process.stdin.emit('error', new Error(secret)));
+        });
+        return result;
+      };
+    `);
+    const result = spawnSync(process.execPath, ['--import', pathToFileURL(adapter).href, 'scripts/setup.mjs', '--directory', root], { encoding: 'utf8' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Setup cancelled');
+    expect(result.stderr).toContain('Terminal restored');
+    expect(result.stdout + result.stderr).not.toContain('synthetic cancel secret');
+    expect(result.stdout + result.stderr).not.toContain('Created .env');
+    expect(result.stdout + result.stderr).not.toMatch(/\$argon2|[a-f0-9]{64}/);
+    await expect(readFile(join(root, '.env'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 });

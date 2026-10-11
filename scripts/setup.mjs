@@ -34,6 +34,8 @@ async function main() {
     process.stdout.write(label);
     if (cancelled) throw new Error('Setup cancelled');
     const value = lines.length ? lines.shift() : await new Promise((resolve, reject) => { waiting = { resolve, reject }; });
+    // A data packet can resolve the line and then cancel before this resumes.
+    if (cancelled) throw new Error('Setup cancelled');
     process.stdout.write('\n'); return value;
   };
   process.stdin.setEncoding('utf8');
@@ -58,6 +60,7 @@ async function main() {
     process.stdin.removeListener('end', fail);
     process.stdin.removeListener('error', fail);
   }
+  if (cancelled) throw new Error('Setup cancelled');
   await createSetupFile({ directory, input, hashPassword: password => argon2.hash(password, { type: argon2.argon2id }), randomBytes });
   process.stdout.write('Created .env in the selected setup directory.\n');
 }
