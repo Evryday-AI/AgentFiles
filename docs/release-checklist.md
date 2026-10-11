@@ -1,6 +1,6 @@
 # AgentFiles v0.1 release acceptance
 
-Planning audit snapshot (2026-10-10): source/config/test inspection and independent dependency-metadata audit completed; that audit executed no application source import, tests, build, clean install or deployment. Phase A now has [local baseline evidence](verification/phase-a.md); the complete release gates below remain unchecked until their release evidence is recorded. See [findings](audit/2026-10-10-source-findings.md) and [phased plan](superpowers/plans/2026-10-10-agentfiles-open-source.md).
+Planning audit snapshot (2026-10-10): source/config/test inspection and independent dependency-metadata audit completed; that audit executed no application source import, tests, build, clean install or deployment. Phase A has [local baseline evidence](verification/phase-a.md), and Phase B has [actual isolated installation evidence](verification/phase-b.md). The complete release gates below remain unchecked until their release evidence is recorded. See [findings](audit/2026-10-10-source-findings.md) and [phased plan](superpowers/plans/2026-10-10-agentfiles-open-source.md).
 
 For each checked gate, record exact public commit, executed command/scenario, environment/image versions, observed result and limitation in `docs/verification/v0.1.0.md`. Raw logs/provenance remain ignored. Inspection, mocked tests, real integration, clean installation and deployed behavior are separate evidence categories.
 

@@ -1,6 +1,6 @@
 # Phase B: independent runtime verification
 
-Date: 2026-10-10. Scope: B1–B4, based on B3 commit `ac48f74`; B4 packaging and evidence are the commit introducing this document. Earlier commits are `9b29d50`/`2cadaa2` (configuration), `874a78e`/`80c6776` (setup), and `1723c84`/`ac48f74` (database/readiness/shutdown). See Git history for exact source. AgentFiles remains in preparation; no release acceptance, production deployment, public HTTPS or phone-access claim is made.
+Date: 2026-10-10. Scope: B1–B4. Configuration commits are `9b29d50`/`2cadaa2`, setup `874a78e`/`80c6776`, database/readiness/shutdown `1723c84`/`ac48f74`, and runtime packaging/build-context protection `9b2af47`/`19336e4`. Each task passed an independent specification and quality review after its fixes. AgentFiles remains in preparation; no release acceptance, production deployment, public HTTPS or phone-access claim is made.
 
 ## Platforms and pinned artifacts
 
@@ -33,6 +33,9 @@ Only newly generated synthetic credentials/bytes and dedicated owned resources w
 | `node scripts/smoke-compose.mjs` | Actual fresh Compose build/install scenarios below passed; owned disposable services/networks/volumes removed |
 | Final `npm test` | 254/254 tests in 17 files passed, zero failures/skips |
 | Final `npm run typecheck` / `npm run build` | Both server/client typechecks and client/server/SQL build exited 0 |
+| `npm run test:integration -- tests/integration/buildContext.test.ts` | Actual Docker context regression: 19 required inputs present, 84 forbidden nested inputs absent |
+| Full and runtime-only `npm audit --json` | Zero reported vulnerabilities; no dependency versions changed after the audit |
+| Tracked-file/private-identifier and full-history secret scans at `19336e4` | 99 tracked files and commit metadata checked; 11 commits secret-scanned with redacted output, zero findings |
 
 The smoke command performs `config --quiet`, `build`, `up -d` and explicit container/HTTP checks under unique projects. It observed healthy PostgreSQL and migration exit 0 before app start, no DB published port, loopback-only app binding and a UID1000-owned writable volume after first Docker copy-up. Local administrator name containing `$` and generated Argon2 hash survived Compose encoding; login returned signed HttpOnly/SameSite=Lax cookie without Secure. Client assets and authenticated synthetic upload/metadata/download returned 200/201 with exact SHA-256/bytes.
 
@@ -41,6 +44,8 @@ Stopping the owned database yielded readiness 503/`ready:false` within the bound
 A separate owned database fixture's ledger checksum was deliberately corrupted. The real migration CLI exited 1; Compose reported the failed completion dependency and left app unstarted. The complete `compose.external-db.yaml` alternative also started successfully with only migration/app services and its own storage, using a temporarily attached synthetic owned database fixture on its own default network. That endpoint was disconnected before cleanup. This exercises the alternative without borrowing any existing infrastructure/network.
 
 Initial smoke caught harness issues (assuming `db` exists in advanced cleanup, an incorrect Docker stop-timeout inspect field, and a mismatched synthetic advanced fixture password). Each was corrected and the complete smoke rerun. No application source or immutable SQL was changed by B4.
+
+Task review identified nested environment/private/runtime inputs admitted by recursive Docker inclusions. A synthetic Docker context regression reproduced 80 forbidden inputs before the fix; narrowed inclusions and final exclusions removed all 84 forbidden fixtures while preserving 19 required inputs. Runtime and setup rebuilds retained identical image payloads. The controller then independently reran all 254 unit tests, both typechecks, the build, 11 real PostgreSQL tests and the real Docker context regression at `19336e4`; all passed. Normalized local documentation links also passed. Status/evidence edits were separately reviewed and staged-scanned.
 
 The entire 11-file staged B4 diff was inspected. `git diff --cached --check`, the redacted private-identifier check and Gitleaks 8.30.1 staged scan with `--redact=100` passed with zero findings. No reference files were read by the identifier check. Raw scanner reports remain ignored; final release image-layer/archive/history scanning remains Phase E.
 
