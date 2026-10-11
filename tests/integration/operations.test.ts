@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { access, readFile, readdir, utimes } from "node:fs/promises";
+import { access, readFile, readdir, utimes, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { createIntegrationFixture, syntheticMultipart } from "../helpers/integration";
 import { isolatedEnvironment } from "../../scripts/smoke-compose.mjs";
@@ -135,6 +135,39 @@ describe("compiled production runtime operations", () => {
     const collision = await runtime(f, "", { collision: file.code });
     const replacement = await upload(collision, key.headers, "new identity"); expect(replacement.status).toBe(201); expect((replacement as any).body.code).not.toBe(file.code);
     expect((await fetch(`${collision.base}/api/files/${file.code}`, { headers: key.headers })).status).toBe(404);
+  });
+  it("inserts a missing later reservation into a fresh recovery database without dropping existing codes", async () => {
+    const source = await fixture();
+    const later = await source.uploadSynthetic({ text: "later source identity", permissions: "upload" });
+    const recovery = await fixture();
+    const retained = await recovery.uploadSynthetic({ text: "existing recovery identity", permissions: "upload" });
+    expect(retained.code).not.toBe(later.code);
+    const reservations = async () => (await recovery.db.query<{ code: string }>("SELECT code FROM issued_file_codes ORDER BY code")).rows.map(row => row.code);
+    expect(await reservations()).toEqual([retained.code]);
+    expect(await row(recovery, later.code)).toBeUndefined();
+    await source.server.close();
+    await recovery.server.close();
+    // Model an older snapshot's reservation/identity in a separate owned DB.
+    // Only these synthetic fixtures are rebound, offline, to the same source
+    // installation identity; neither app can issue during the registry export.
+    await source.db.query("INSERT INTO issued_file_codes(code) VALUES($1)", [retained.code]);
+    const identity = (await source.db.query("SELECT volume_id FROM storage_volume_identity WHERE singleton")).rows[0].volume_id;
+    await recovery.db.query("UPDATE storage_volume_identity SET volume_id=$1 WHERE singleton", [identity]);
+    await writeFile(join(recovery.storageRoot, ".agentfiles-volume"), identity, { mode: 0o600 });
+    const codes = (await source.db.query<{ code: string }>("SELECT code FROM issued_file_codes ORDER BY code")).rows.map(row => row.code);
+    const snapshot = (await source.db.query("SELECT txid_current_snapshot()::text AS boundary")).rows[0].boundary;
+    const evidence = { version: 1, volumeId: identity, boundary: { kind: "quiesced-full-registry", stoppedApp: "owned-synthetic-stopped-source", appImage: "compiled-runtime", databaseSnapshot: snapshot, generatedAt: new Date().toISOString() }, codes };
+    await mergeRecoveryRegistry(recovery.db, evidence, identity, true);
+    expect(await reservations()).toEqual([retained.code, later.code].sort());
+    const key = await recovery.createSyntheticKey(["can_upload", "can_download"]);
+    const collision = await runtime(recovery, "", { collision: later.code });
+    const replacement = await upload(collision, key.headers, "new recovered identity");
+    expect(replacement.status).toBe(201); expect((replacement as any).body.code).not.toBe(later.code);
+    expect(await reservations()).toContain(retained.code);
+    expect(await reservations()).toContain(later.code);
+    expect((await fetch(`${collision.base}/api/files/${later.code}`, { headers: key.headers })).status).toBe(404);
+    const preserved = await fetch(`${collision.base}/api/files/${retained.code}/download`, { headers: key.headers });
+    expect(preserved.status).toBe(200); expect(await preserved.text()).toBe("existing recovery identity");
   });
   it("injected ENOSPC after real staging fails safely without filling the host disk", async () => {
     const f = await fixture(); const key = await f.createSyntheticKey(["can_upload"]);
