@@ -79,3 +79,13 @@ These values never appear in public instance JSON. Restart/recreate affected ser
 | `COMPOSE_PROJECT_NAME` | Optional independent project name; isolates owned services/volumes |
 
 Never commit `.env`, `.env.development.local`, `.env.native.local`, storage bytes, database dumps or generated setup credentials. The committed `.env.example` is a newly authored template containing invalid sentinels.
+
+## Database readiness, storage and shutdown
+
+Every route, repository and scheduled cleanup receives the database created from the validated `DATABASE_URL`. No ambient `PG*` credentials, port or TLS defaults select a different connection. An omitted URL user defaults to `postgres`, omitted password stays empty, and omitted port defaults to 5432. Production passwords should be supplied explicitly. URL-provided TLS settings are preserved; use the settings appropriate to the independently operated database. Connect, SQL statement and client query timeouts are each capped at 2.5 seconds.
+
+`GET /api/health` returns process liveness without a database query. `GET /api/ready` returns 200 with `{ "ready": true }` only when the owned database has exactly schema version 2 and matching migration checksums; an unavailable database, missing migration, unexpected version or changed checksum returns 503 with `{ "ready": false }`. Readiness has a 2.5-second deadline and omits internal errors and connection details. Run the [immutable migrations](migration-notes.md) before app startup.
+
+`STORAGE_ROOT` must already be a directory readable, writable and searchable by the app process. Startup rejects a symlink root; on POSIX it also requires the process UID to own the directory and rejects world-writable roots. Startup creates, syncs, reads and removes an exclusive probe file to verify access. Create the directory and set its owner before native startup; container volume initialization must provide the app UID. Windows uses actual directory access and the probe because POSIX ownership is unavailable. Deeper mount, child-symlink and orphan-recovery checks remain Phase C work.
+
+SIGINT and SIGTERM stop admission through Fastify close, await active cleanup and transfers, then close database connections. One ten-second deadline bounds the entire drain. Successful drain exits zero; a failed or hung operation exits nonzero at the deadline, and database close is attempted even if server close times out. A forced exit may interrupt transfers or cleanup; restart recovery remains Phase C work. Configure container stop grace longer than ten seconds. Restart the process after changing database or storage configuration.

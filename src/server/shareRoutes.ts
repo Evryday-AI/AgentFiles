@@ -7,7 +7,7 @@ import {
   type Principal,
 } from "./auth.js";
 import type { AppConfig } from "./config.js";
-import { query as defaultQuery, type Queryable } from "./db.js";
+import { unconfiguredDatabase, type Queryable } from "./db.js";
 import { findFileByCode, type FileRecord, type UploadedByType } from "./filesRepo.js";
 import { openDownloadStream as defaultOpenDownloadStream } from "./storage.js";
 
@@ -62,9 +62,7 @@ export interface ShareRoutesDependencies {
   ) => Promise<Principal | null>;
 }
 
-const db: Queryable = {
-  query: defaultQuery,
-};
+const db = unconfiguredDatabase;
 
 const defaultRepo: ShareRepo = {
   findFileByCode,

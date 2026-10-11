@@ -1,3 +1,4 @@
+import type { Queryable } from "./db.js";
 import { listFiles, markFileDeleted } from "./filesRepo.js";
 import { deleteStoredFile as defaultDeleteStoredFile } from "./storage.js";
 
@@ -11,6 +12,7 @@ export interface ExpiredFileRecord {
 
 export interface CleanupExpiredFilesOptions {
   storageRoot: string;
+  db?: Queryable;
   repo?: {
     findExpiredFiles?: (now: Date) => Promise<ExpiredFileRecord[]>;
     markFileDeleted?: (code: string) => Promise<unknown>;
@@ -41,17 +43,14 @@ export interface CleanupExpiredFilesJob {
   stop(): Promise<void>;
 }
 
-const defaultRepo = {
-  async findExpiredFiles(now: Date): Promise<ExpiredFileRecord[]> {
-    return listFiles({ expiresBefore: now, isDurable: false });
-  },
-  markFileDeleted,
-};
-
 export async function cleanupExpiredFiles(
   options: CleanupExpiredFilesOptions,
 ): Promise<CleanupExpiredFilesResult> {
-  const repo = { ...defaultRepo, ...options.repo };
+  const repo = {
+    findExpiredFiles: (now: Date) => listFiles({ expiresBefore: now, isDurable: false }, options.db),
+    markFileDeleted: (code: string) => markFileDeleted(code, options.db),
+    ...options.repo,
+  };
   const deleteStoredFile = options.deleteStoredFile ?? defaultDeleteStoredFile;
   const now = options.now ?? new Date();
   const files = await repo.findExpiredFiles(now);

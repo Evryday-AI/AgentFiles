@@ -55,7 +55,7 @@ function adminPasswordHash(source: NodeJS.ProcessEnv): string {
   return value;
 }
 
-function databaseUrl(source: NodeJS.ProcessEnv): string {
+export function validatedDatabaseUrl(source: NodeJS.ProcessEnv): string {
   const value = required(source, "DATABASE_URL");
   try {
     const url = new URL(value);
@@ -96,7 +96,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env) {
   return {
     nodeEnv, deploymentMode,
     port: integer(source, "PORT", 3000, 1, 65535),
-    databaseUrl: databaseUrl(source),
+    databaseUrl: validatedDatabaseUrl(source),
     storageRoot: required(source, "STORAGE_ROOT"),
     sessionSecret: sessionSecret(source),
     adminUsername,

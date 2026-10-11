@@ -1,4 +1,6 @@
-import { existsSync } from "node:fs";
+import { existsSync, constants } from "node:fs";
+import { access, lstat, open, readFile, unlink } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import fastifyCookie from "@fastify/cookie";
@@ -10,13 +12,17 @@ import { cleanupExpiredFiles, startCleanupExpiredFilesJob } from "./cleanup.js";
 import { loadConfig, type AppConfig } from "./config.js";
 import { registerFilesRoutes } from "./filesRoutes.js";
 import { registerShareRoutes } from "./shareRoutes.js";
+import { createDatabase, type Database } from "./db.js";
+import { checkReadiness } from "./health.js";
+import { EXPECTED_SCHEMA_VERSION } from "./migrate.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const currentDir = dirname(currentFile);
 
-export function buildServer(config: AppConfig = loadConfig()) {
+export function buildServer(config: AppConfig, deps: { db?: Database } = {}) {
+  const db = deps.db ?? createDatabase(config.databaseUrl);
   const server = Fastify({
-    logger: config.nodeEnv !== "test",
+    logger: config.nodeEnv === "test" ? false : { serializers: { err: () => ({ type: "Error", message: "Request failed", stack: "" }) } },
     trustProxy: config.trustProxy,
   });
 
@@ -25,28 +31,32 @@ export function buildServer(config: AppConfig = loadConfig()) {
     service: "agentfiles",
   }));
 
+  server.get("/api/ready", async (_request, reply) => {
+    const ready = await checkReadiness(db, EXPECTED_SCHEMA_VERSION);
+    return reply.code(ready ? 200 : 503).send({ ready });
+  });
+  if (!deps.db) server.addHook("onClose", async () => { await db.close(); });
+
   void server.register(fastifyCookie, {
     secret: config.sessionSecret,
   });
   void server.register(fastifyRateLimit, {
     global: false,
   });
-  void server.register(registerAdminRoutes, { config });
-  void server.register(registerFilesRoutes, { config });
-  void server.register(registerShareRoutes, { config });
+  void server.register(registerAdminRoutes, { config, db });
+  void server.register(registerFilesRoutes, { config, db });
+  void server.register(registerShareRoutes, { config, db });
 
   const cleanupIntervalMs = config.cleanupIntervalMs;
   if (config.nodeEnv !== "test" && cleanupIntervalMs > 0) {
     const cleanupJob = startCleanupExpiredFilesJob({
       intervalMs: cleanupIntervalMs,
       cleanup: async () => {
-        const result = await cleanupExpiredFiles({ storageRoot: config.storageRoot });
-        for (const failure of result.failures) {
-          server.log.error({ failure }, "Expired file byte cleanup failed");
-        }
+        const result = await cleanupExpiredFiles({ storageRoot: config.storageRoot, db });
+        if (result.failed > 0) server.log.error({ failed: result.failed }, "Expired file byte cleanup failed");
         return result;
       },
-      onError: (error) => server.log.error({ error }, "Expired file cleanup failed"),
+      onError: () => server.log.error("Expired file cleanup failed"),
     });
     server.addHook("onClose", async () => {
       await cleanupJob.stop();
@@ -88,17 +98,76 @@ export function buildServer(config: AppConfig = loadConfig()) {
   return server;
 }
 
+export const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+export async function validateStorageRoot(storageRoot: string): Promise<void> {
+  let probe: string | undefined;
+  try {
+    const stats = await lstat(storageRoot);
+    if (!stats.isDirectory() || stats.isSymbolicLink() ||
+        (process.getuid && (stats.uid !== process.getuid() || (stats.mode & 0o002) !== 0))) throw new Error();
+    await access(storageRoot, constants.R_OK | constants.W_OK | constants.X_OK);
+    const candidate = resolve(storageRoot, `.agentfiles-preflight-${randomBytes(16).toString("hex")}`);
+    const handle = await open(candidate, "wx", 0o600);
+    probe = candidate;
+    try { await handle.writeFile("agentfiles storage probe"); await handle.sync(); }
+    finally { await handle.close(); }
+    if (await readFile(candidate, "utf8") !== "agentfiles storage probe") throw new Error();
+    await unlink(candidate); probe = undefined;
+  } catch {
+    if (probe) await unlink(probe).catch(() => {});
+    throw new Error("STORAGE_ROOT is not an owned writable directory");
+  }
+}
+
+// One shared deadline covers cleanup/active transfers and database close.
+export async function shutdownServer(
+  server: Pick<import("fastify").FastifyInstance, "close">,
+  db: Pick<Database, "close">,
+  timeoutMs = SHUTDOWN_TIMEOUT_MS,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  const bounded = async (operation: () => Promise<unknown>) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        operation().then(() => true, () => false),
+        new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), Math.max(0, deadline - Date.now())); }),
+      ]);
+    } catch { return false; }
+    finally { clearTimeout(timer); }
+  };
+  const drained = await bounded(() => server.close());
+  const closed = await bounded(() => db.close());
+  return drained && closed;
+}
+
 async function start() {
   const config = loadConfig();
-  const server = buildServer(config);
-  // Containers opt in explicitly; native startup stays bound to loopback.
+  await validateStorageRoot(config.storageRoot);
+  const db = createDatabase(config.databaseUrl);
+  const server = buildServer(config, { db });
+  let stopping = false;
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    // The hard deadline also bounds hooks or transfers that never settle.
+    const forcedExit = setTimeout(() => process.exit(1), SHUTDOWN_TIMEOUT_MS);
+    void shutdownServer(server, db).then(drained => {
+      clearTimeout(forcedExit);
+      process.exit(drained ? 0 : 1);
+    });
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
   const host = process.argv.includes("--host=0.0.0.0") ? "0.0.0.0" : "127.0.0.1";
-  await server.listen({ host, port: config.port });
+  try { await server.listen({ host, port: config.port }); }
+  catch { await shutdownServer(server, db); throw new Error("Server startup failed"); }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  start().catch((error) => {
-    console.error(error);
-    process.exit(1);
+  start().catch(() => {
+    console.error("Server startup failed; check configuration and storage permissions.");
+    process.exitCode = 1;
   });
 }

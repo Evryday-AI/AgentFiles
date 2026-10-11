@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { cookieIsSecure, type AppConfig } from "./config.js";
-import { query as defaultQuery, type Queryable } from "./db.js";
+import { unconfiguredDatabase, type Queryable } from "./db.js";
 import {
   ADMIN_SESSION_COOKIE_NAME,
   createApiKeySecret,
@@ -68,9 +68,7 @@ const apiKeyColumns = `
   revoked_at
 `;
 
-const db: Queryable = {
-  query: defaultQuery,
-};
+const db = unconfiguredDatabase;
 
 const defaultStorage: AdminStorage = {
   getStorageUsage: defaultGetStorageUsage,

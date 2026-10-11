@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import argon2 from "argon2";
 import type { FastifyRequest } from "fastify";
 import type { AppConfig } from "./config.js";
-import { query as defaultQuery, type Queryable } from "./db.js";
+import { unconfiguredDatabase, type Queryable } from "./db.js";
 
 export const ADMIN_SESSION_COOKIE_NAME = "agentfiles_admin";
 
@@ -51,9 +51,7 @@ interface AdminSessionRow {
   id: string;
 }
 
-const db: Queryable = {
-  query: defaultQuery,
-};
+const db = unconfiguredDatabase;
 
 const apiKeyColumns = `
   id,

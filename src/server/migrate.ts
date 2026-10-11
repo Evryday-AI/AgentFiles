@@ -1,60 +1,62 @@
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { closeDb, query, type Queryable } from "./db.js";
+import { createDatabase, type Database } from "./db.js";
+import { validatedDatabaseUrl } from "./config.js";
 
 const modulePath = fileURLToPath(import.meta.url);
-const schemaPath = join(dirname(modulePath), "schema.sql");
+const migrationsPath = join(dirname(modulePath), "migrations");
+export const EXPECTED_SCHEMA_VERSION = 2;
+export const MIGRATION_LOCK_ID = 742131109;
+export interface Migration { version: number; checksum: string; sql: string }
+export interface MigrationRow { version: number; checksum: string }
 
-const inferredMimeBackfillSql = `
-  UPDATE files
-  SET
-    mime_type = CASE
-      WHEN lower(original_name) LIKE '%.mp4' OR lower(original_name) LIKE '%.m4v'
-        THEN 'video/mp4'
-      WHEN lower(original_name) LIKE '%.mov'
-        THEN 'video/quicktime'
-      WHEN lower(original_name) LIKE '%.webm'
-        THEN 'video/webm'
-      WHEN lower(original_name) LIKE '%.ogg' OR lower(original_name) LIKE '%.ogv'
-        THEN 'video/ogg'
-      ELSE mime_type
-    END,
-    updated_at = now()
-  WHERE mime_type = 'application/octet-stream'
-    AND (
-      lower(original_name) LIKE '%.mp4'
-      OR lower(original_name) LIKE '%.m4v'
-      OR lower(original_name) LIKE '%.mov'
-      OR lower(original_name) LIKE '%.webm'
-      OR lower(original_name) LIKE '%.ogg'
-      OR lower(original_name) LIKE '%.ogv'
-    )
-`;
-
-const defaultClient: Queryable = { query };
-
-export async function migrate(client: Queryable = defaultClient) {
-  const schema = await readFile(schemaPath, "utf8");
-  await client.query(schema);
-  await backfillInferredMimeTypes(client);
+export async function loadMigrations(): Promise<Migration[]> {
+  const names = (await readdir(migrationsPath)).filter(name => /^\d{3}_[a-z_]+\.sql$/.test(name)).sort();
+  const migrations = await Promise.all(names.map(async name => {
+    const sql = await readFile(join(migrationsPath, name), "utf8");
+    return { version: Number(name.slice(0, 3)), checksum: createHash("sha256").update(sql).digest("hex"), sql };
+  }));
+  if (migrations.length !== EXPECTED_SCHEMA_VERSION || migrations.some((m, i) => m.version !== i + 1)) throw new Error("Migration files are incomplete or out of order");
+  return migrations;
 }
 
-export async function backfillInferredMimeTypes(client: Queryable = defaultClient) {
-  await client.query(inferredMimeBackfillSql);
+export function ledgerMatches(rows: MigrationRow[], migrations: Migration[], exact = false): boolean {
+  return (!exact || rows.length === migrations.length) && rows.length <= migrations.length && rows.every((row, i) => row.version === migrations[i].version && row.checksum === migrations[i].checksum);
+}
+
+export async function migrate(database: Database): Promise<void> {
+  const migrations = await loadMigrations();
+  await database.withClient(async client => {
+    await client.query("BEGIN");
+    try {
+      await client.query("SELECT pg_advisory_xact_lock($1)", [MIGRATION_LOCK_ID]);
+      await client.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`);
+      const { rows } = await client.query<MigrationRow>("SELECT version, checksum FROM schema_migrations ORDER BY version");
+      if (!ledgerMatches(rows, migrations)) throw new Error("Migration ledger does not match the installed migration files");
+      for (const migration of migrations.slice(rows.length)) {
+        await client.query(migration.sql);
+        await client.query("INSERT INTO schema_migrations(version, checksum) VALUES($1, $2)", [migration.version, migration.checksum]);
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    }
+  });
 }
 
 if (process.argv[1] === modulePath) {
-  migrate()
-    .then(() => {
-      console.info("Database schema migration complete.");
-    })
-    .catch((error: unknown) => {
-      console.error("Database schema migration failed.");
-      console.error(error);
-      process.exitCode = 1;
-    })
-    .finally(async () => {
-      await closeDb();
-    });
+  let database: Database | undefined;
+  try {
+    database = createDatabase(validatedDatabaseUrl(process.env));
+    await migrate(database);
+    console.info("Database migrations complete.");
+  } catch {
+    console.error("Database migration failed; check configuration and the migration ledger.");
+    process.exitCode = 1;
+  } finally { await database?.close(); }
 }

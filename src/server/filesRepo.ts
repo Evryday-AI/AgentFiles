@@ -1,5 +1,5 @@
 import { createFileCode } from "./fileCodes.js";
-import { query as defaultQuery, type Queryable } from "./db.js";
+import { unconfiguredDatabase, type Queryable } from "./db.js";
 
 export type { Queryable };
 
@@ -90,9 +90,7 @@ const fileColumns = `
   metadata
 `;
 
-const db: Queryable = {
-  query: defaultQuery,
-};
+const db = unconfiguredDatabase;
 
 export async function createFileRecord(
   input: CreateFileInput,
