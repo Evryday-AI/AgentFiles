@@ -65,6 +65,8 @@ class MockHTTP(unittest.TestCase):
         self.requests = []
         self.content = b'AgentFiles synthetic round trip\n'
         self.mode = 'normal'
+        self.upload_received = threading.Event()
+        self.release_upload = threading.Event()
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -78,7 +80,10 @@ class MockHTTP(unittest.TestCase):
                     self.send_header(name.replace('_', '-'), value)
                 self.send_header('Content-Length', str(len(data)))
                 self.end_headers()
-                self.wfile.write(data)
+                try:
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # Expected when the bounded client rejects the body.
 
             def record(self):
                 owner.requests.append((self.command, self.path, self.headers.get('Authorization'), self.headers.get('Cookie')))
@@ -93,7 +98,9 @@ class MockHTTP(unittest.TestCase):
                     elif owner.mode == 'bad_principal':
                         self.respond(200, {'authenticated': True, 'principal': ['untrusted']})
                     elif owner.mode == 'redirect':
-                        self.respond(302, b'', Location=owner.origin + '/redirect-target')
+                        self.respond(302, b'', Location=getattr(owner, 'redirect_target', owner.origin + '/redirect-target'))
+                    elif owner.mode == 'oversize_session':
+                        self.respond(200, b'x' * (2 * 1024 * 1024))
                     elif owner.mode == 'cross_redirect':
                         self.respond(302, b'', Location='http://127.0.0.1:1/should-not-contact')
                     elif owner.mode == 'rate':
@@ -103,7 +110,7 @@ class MockHTTP(unittest.TestCase):
                         if owner.mode == 'denied':
                             principal['canUpload'] = False
                         self.respond(200, {'authenticated': True, 'principal': principal})
-                elif self.path.endswith('/download'):
+                elif self.path.endswith('/download') or self.path.startswith('/s/'):
                     self.respond(200, b'corrupt' if owner.mode == 'corrupt' else owner.content)
                 else:
                     self.respond(200, owner.dto())
@@ -113,14 +120,19 @@ class MockHTTP(unittest.TestCase):
                 data = self.rfile.read(int(self.headers['Content-Length']))
                 if self.path == '/api/files':
                     owner.upload_bytes = data
+                    owner.upload_length = int(self.headers['Content-Length'])
+                    owner.upload_received.set()
                     if owner.mode == 'disconnect_upload':
+                        self.close_connection = True
+                    elif owner.mode == 'timeout_upload':
+                        owner.release_upload.wait(2)
                         self.close_connection = True
                     elif owner.mode == 'bad_upload':
                         self.respond(201, ['untrusted'])
                     else:
                         self.respond(201, owner.dto())
                 else:
-                    self.respond(201, {'id': 'synthetic-share-id', 'public_url': owner.origin + '/s/synthetic-token', 'expires_at': '2099-01-01T00:00:00Z'})
+                    self.respond(201, {'id': '00000000-0000-4000-8000-000000000001', 'public_url': owner.origin + '/s/' + 't' * 43, 'expires_at': '2099-01-01T00:00:00Z'})
 
             def do_DELETE(self):
                 self.record()
@@ -133,6 +145,7 @@ class MockHTTP(unittest.TestCase):
         self.c = client.Client(self.origin, 'synthetic-key')
 
     def tearDown(self):
+        self.release_upload.set()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
@@ -170,6 +183,48 @@ class MockHTTP(unittest.TestCase):
             self.assertIn(b'name="durable"', self.upload_bytes)
             self.assertEqual(sum(method == 'POST' for method, *_ in self.requests), 2)
             self.assertEqual(sum(method == 'DELETE' for method, *_ in self.requests), 2)
+            public_requests = [auth for method, path, auth, cookie in self.requests if path.startswith('/s/')]
+            self.assertEqual(public_requests, [None])
+
+    def test_streaming_upload_declares_exact_content_length(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory) / 'large.bin'
+            source.write_bytes(b'x' * (client.CHUNK * 3 + 7))
+            self.content = source.read_bytes()
+            file, digest = self.c.upload(source)
+            self.assertEqual(self.upload_length, len(self.upload_bytes))
+            self.assertIn(self.content, self.upload_bytes)
+            self.assertEqual(digest, hashlib.sha256(self.content).hexdigest())
+
+    def test_ambiguous_upload_timeout_is_not_retried(self):
+        self.mode = 'timeout_upload'
+        c = client.Client(self.origin, 'synthetic-key', timeout=0.05)
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory) / 'hello.txt'
+            source.write_bytes(self.content)
+            with self.assertRaisesRegex(RuntimeError, 'outcome is unknown.*do not repeat POST'):
+                c.upload(source)
+        self.assertTrue(self.upload_received.is_set())
+        self.assertEqual(sum(method == 'POST' for method, *_ in self.requests), 1)
+
+    def test_redirect_to_second_server_receives_no_credential(self):
+        received = []
+        class Sink(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_GET(self):
+                received.append(self.headers.get('Authorization'))
+                self.send_response(200); self.end_headers()
+        sink = ThreadingHTTPServer(('127.0.0.1', 0), Sink)
+        thread = threading.Thread(target=sink.serve_forever, daemon=True); thread.start()
+        original = self.origin
+        try:
+            self.mode = 'redirect'
+            self.origin = f'http://127.0.0.1:{sink.server_port}'
+            with self.assertRaisesRegex(RuntimeError, 'Redirect rejected'):
+                self.c.require_permissions('can_upload')
+            self.assertEqual(received, [])
+        finally:
+            self.origin = original; sink.shutdown(); sink.server_close(); thread.join()
 
     def test_invalid_or_denied_session_stops_before_upload(self):
         for mode in ['invalid', 'denied']:

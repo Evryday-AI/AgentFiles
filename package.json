@@ -19,7 +19,8 @@
     "test:watch": "vitest",
     "migrate": "node dist/server/migrate.js",
     "migrate:src": "tsx src/server/migrate.ts",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "validate:openapi": "node scripts/validate-openapi.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
@@ -34,11 +35,14 @@
     "zod": "^4.2.0"
   },
   "devDependencies": {
+    "@apidevtools/swagger-parser": "13.1.0",
     "@types/node": "^24.10.1",
     "@types/pg": "^8.15.6",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.0",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "concurrently": "^9.2.1",
     "jsdom": "^27.2.0",
     "react": "^19.2.1",

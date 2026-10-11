@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source-derived HTTP example; application runtime verification is pending D1."""
+"""Streaming standard-library client for the self-hosted AgentFiles HTTP API."""
 
 import argparse
 import hashlib
@@ -83,7 +83,7 @@ def validate_file(file):
         'code', 'name', 'created_at', 'private_url', 'api_download_url',
     )):
         raise ValueError('Invalid File DTO')
-    if not re.fullmatch(r'F-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]+', file['code']):
+    if not re.fullmatch(r'F-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}', file['code']):
         raise ValueError('Invalid file code')
     if 'expires_at' not in file or (file['expires_at'] is not None and not isinstance(file['expires_at'], str)):
         raise ValueError('Invalid file expiry')
@@ -102,11 +102,14 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class Client:
-    def __init__(self, origin, key):
+    def __init__(self, origin, key, timeout=30):
         self.origin = normalize_origin(origin)
         if not key or re.search(r'[\x00-\x20\x7f]', key) or len(key) > 1024:
             raise ValueError('API key is missing or contains unsafe header characters')
         self.key = key
+        if not isinstance(timeout, (int, float)) or not 0 < timeout <= 120:
+            raise ValueError('Timeout must be between zero and 120 seconds')
+        self.timeout = timeout
         # Direct connections avoid ambient proxy settings; TLS uses stdlib verification.
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
 
@@ -129,14 +132,14 @@ class Client:
             if urlsplit(file[field]).path != expected_path:
                 raise ValueError('Returned file URL does not match its code')
 
-    def open(self, method, path, data=None, headers=None, upload=False):
+    def open(self, method, path, data=None, headers=None, upload=False, authenticated=True):
         url = self.check_url(path if '://' in path else self.origin + path)
         request = Request(url, data=data, method=method, headers={
-            'Authorization': 'Bearer ' + self.key,
+            **({'Authorization': 'Bearer ' + self.key} if authenticated else {}),
             'Accept': 'application/json', **(headers or {}),
         })
         try:
-            response = self.opener.open(request, timeout=30)
+            response = self.opener.open(request, timeout=self.timeout)
             if not 200 <= response.status < 300:
                 response.close()
                 raise RuntimeError('Unexpected HTTP response')
@@ -152,7 +155,7 @@ class Client:
                 410: 'File or share has expired or is unavailable.',
                 413: 'Reduce file size or ask the operator to review upload settings.',
                 429: 'Wait before a new attempt; do not retry an uncertain upload.',
-                507: 'Capacity rejection is planned; ask the operator to free capacity.',
+                507: 'Capacity is unavailable; ask the operator to review storage or code capacity.',
             }.get(status, 'Inspect the instance before attempting the operation again.')
             if 300 <= status < 400:
                 guidance = 'Redirect rejected; credentials were not forwarded.'
@@ -161,7 +164,7 @@ class Client:
             if upload and status >= 500:
                 guidance += ' Upload outcome may be unknown; do not repeat POST without reconciliation.'
             raise RuntimeError(f'HTTP {status}. {guidance}') from None
-        except (URLError, TimeoutError, OSError):
+        except (URLError, TimeoutError, OSError, HTTPException):
             message = 'Network request failed.'
             if upload:
                 message += ' Upload outcome is unknown: do not repeat POST. Reconcile with authorized metadata/list access.'
@@ -235,7 +238,7 @@ class Client:
             raise ValueError('Upload checksum mismatch; do not repeat POST')
         return file, digest.hexdigest()
 
-    def download(self, url, destination, expected_sha256, expected_size=None):
+    def download(self, url, destination, expected_sha256, expected_size=None, authenticated=True):
         self.check_url(url)
         if expected_size is not None and (type(expected_size) is not int or not 0 <= expected_size <= MAX_FILE_BYTES):
             raise ValueError('Invalid download size')
@@ -243,7 +246,7 @@ class Client:
         # Exclusive creation refuses existing files and symlinks. The caller owns the directory.
         with destination.open('xb') as output:
             try:
-                with self.open('GET', url) as response:
+                with self.open('GET', url, authenticated=authenticated) as response:
                     count = 0
                     while chunk := response.read(CHUNK):
                         count += len(chunk)
@@ -317,6 +320,12 @@ def main():
         if not isinstance(share, dict) or not isinstance(share.get('id'), str) or not isinstance(share.get('public_url'), str):
             raise ValueError('Invalid share response')
         client.check_url(share['public_url'])
+        if not re.fullmatch(r'/s/[A-Za-z0-9_-]{43}', urlsplit(share['public_url']).path):
+            raise ValueError('Invalid public share URL')
+        # Explicitly requested share verification uses no key and no cookies.
+        client.download(share['public_url'], directory / 'public-share.bin', uploaded_sha256,
+                        metadata['size_bytes'], authenticated=False)
+        result['anonymous_share_verified'] = True
         result['share'] = share
         if args.revoke_share:
             revoked = client.json('DELETE', '/api/share-links/' + quote(str(share['id']), safe=''))
@@ -328,7 +337,7 @@ def main():
         if not isinstance(deleted, dict) or deleted.get('deleted') is not True:
             raise ValueError('File deletion was not confirmed')
         result['remote_deleted'] = True
-    print(json.dumps(result, indent=2))
+    print(json.dumps(result, ensure_ascii=True))
 
 
 if __name__ == '__main__':

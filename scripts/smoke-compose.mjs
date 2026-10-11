@@ -7,9 +7,10 @@ import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import argon2 from 'argon2';
 import { createSetupFile } from './setup-lib.mjs';
+import { runAgentSmoke } from './smoke-agents.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const appSettings = ['NODE_ENV', 'DEPLOYMENT_MODE', 'PORT', 'DATABASE_URL', 'STORAGE_ROOT', 'SESSION_SECRET', 'ADMIN_USERNAME', 'ADMIN_PASSWORD_HASH', 'PUBLIC_BASE_URL', 'TRUST_PROXY', 'RETENTION_DAYS', 'ALLOW_PERSISTENT_FILES', 'FILE_ISSUANCE_ENABLED', 'MAX_UPLOAD_BYTES', 'MAX_STORAGE_BYTES', 'MIN_FREE_DISK_BYTES', 'MAX_CONCURRENT_UPLOADS', 'CLEANUP_INTERVAL_SECONDS', 'ORPHAN_GRACE_SECONDS', 'CLEANUP_BATCH_SIZE', 'METADATA_RETENTION_DAYS', 'EVENT_RETENTION_DAYS', 'APP_PORT', 'SETUP_UID', 'SETUP_GID'];
+const childEnvironmentNames = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'PROGRAMDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'SYSTEMDRIVE', 'COMSPEC', 'LANG', 'LC_ALL', 'TERM', 'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS']);
 
 export function ownedChild(parent, name) {
   const target = resolve(parent, name);
@@ -19,7 +20,14 @@ export function ownedChild(parent, name) {
 }
 
 export function isolatedEnvironment(source) {
-  return Object.fromEntries(Object.entries(source).filter(([key]) => !appSettings.includes(key.toUpperCase()) && !/^(PG|POSTGRES|COMPOSE|DOCKER|VITE_|NPM_CONFIG_)/i.test(key)));
+  // Allow only process/tool discovery and local OS settings. No ambient app,
+  // database, cloud, client, npm or proxy configuration enters fixture children.
+  return Object.fromEntries(Object.entries(source).filter(([key]) => childEnvironmentNames.has(key.toUpperCase())));
+}
+
+export function parseSmokeOptions(args) {
+  if (args.some(arg => arg !== '--agents') || new Set(args).size !== args.length) throw new Error('Unknown or duplicate smoke option');
+  return { agents: args.includes('--agents') };
 }
 
 export function sanitizeDiagnostics(value, secrets = []) {
@@ -32,6 +40,7 @@ export function sanitizeDiagnostics(value, secrets = []) {
 }
 
 async function main() {
+  const options = parseSmokeOptions(process.argv.slice(2));
   const template = await readFile(resolve(root, 'compose.yaml'), 'utf8');
   const scratch = ownedChild(root, '.private/compose-smoke');
   await mkdir(scratch, { recursive: true });
@@ -77,7 +86,8 @@ async function main() {
     await new Promise(done => server.close(done));
     const password = randomBytes(24).toString('hex');
     secrets.push(password);
-    await createSetupFile({ directory: target, input: { mode: 'local', origin: `http://localhost:${port}`, adminName: 'smoke-$-admin', password, confirmation: password }, hashPassword: value => argon2.hash(value, { type: argon2.argon2id }), randomBytes });
+    const origin = options.agents && !suffix ? 'http://127.0.0.1:3000' : `http://localhost:${port}`;
+    await createSetupFile({ directory: target, input: { mode: 'local', origin, adminName: 'smoke-$-admin', password, confirmation: password }, hashPassword: value => argon2.hash(value, { type: argon2.argon2id }), randomBytes });
     let configuration = await readFile(resolve(target, '.env'), 'utf8');
     configuration = configuration.replace("APP_PORT='3000'", `APP_PORT='${port}'`);
     secrets.push(...[...configuration.matchAll(/^(?:POSTGRES_PASSWORD|SESSION_SECRET|ADMIN_PASSWORD_HASH|DATABASE_URL)='(.*)'$/gm)].map(m => m[1]));
@@ -85,7 +95,7 @@ async function main() {
     // Resolve only reviewed build contexts; env_file remains in this scratch fixture.
     await writeFile(resolve(target, 'compose.yaml'), source.replaceAll('context: .', `context: '${root.replaceAll('\\', '/')}'`).replaceAll('agentfiles-local:0.1.0', `${project}:test`));
     const databaseUrl = configuration.match(/^DATABASE_URL='(.*)'$/m)[1];
-    const item = { project: name, directory: target, port, password, services, databaseUrl };
+    const item = { project: name, directory: target, port, origin, password, services, databaseUrl };
     projects.push(item);
     return item;
   };
@@ -126,7 +136,7 @@ async function main() {
     }
     record('database health and migration completion gate app; no DB port; loopback app port; volume copy-up ownership');
     const base = `http://127.0.0.1:${main.port}`;
-    const origin = `http://localhost:${main.port}`;
+    const origin = main.origin;
     assert.equal((await fetch(`${base}/api/health`)).status, 200);
     assert.equal((await fetch(`${base}/assets/app.js`)).status, 200);
     const login = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json', origin }, body: JSON.stringify({ username: 'smoke-$-admin', password: main.password }) });
@@ -148,6 +158,9 @@ async function main() {
     };
     await download();
     record('localhost login cookie, client assets, authenticated upload and SHA-256 download');
+    if (options.agents) {
+      await runAgentSmoke({ root, fixture: main, app, cookie, command, compose, secrets, record });
+    }
     await compose(main, ['stop', 'db']);
     const readinessStart = Date.now();
     const unavailable = await fetch(`${base}/api/ready`, { signal: AbortSignal.timeout(5000) });

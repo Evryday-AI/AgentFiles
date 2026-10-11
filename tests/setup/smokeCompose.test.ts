@@ -17,6 +17,11 @@ describe('Compose smoke isolation', () => {
     const clean = runner?.isolatedEnvironment({ PATH: 'tools', DATABASE_URL: 'sentinel', PGHOST: 'sentinel', COMPOSE_FILE: 'sentinel', DOCKER_HOST: 'sentinel', ADMIN_USERNAME: 'sentinel', APP_PORT: '9', VITE_SECRET: 'sentinel' });
     expect(clean).toEqual({ PATH: 'tools' });
   });
+  it('accepts only the explicit agents option and strips ambient client credentials', () => {
+    expect(runner?.parseSmokeOptions?.(['--agents'])).toEqual({ agents: true });
+    expect(() => runner?.parseSmokeOptions?.(['--unknown'])).toThrow();
+    expect(runner?.isolatedEnvironment({ PATH: 'tools', AGENTFILES_API_KEY: 'sentinel', AWS_SECRET_ACCESS_KEY: 'sentinel', GITHUB_TOKEN: 'sentinel' })).toEqual({ PATH: 'tools' });
+  });
   it('bounds diagnostics and masks fixture secrets, cookies and URLs', () => {
     const output = runner?.sanitizeDiagnostics('password-secret postgresql://user:pw@host/db /s/share-token\ncookie=secret-cookie', ['password-secret', 'secret-cookie']);
     expect(output).not.toContain('password-secret');

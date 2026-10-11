@@ -25,6 +25,12 @@ Review changes before distributing. The notice generator refuses missing require
 
 ## Direct dependencies
 
+D1 added exact development declarations `@apidevtools/swagger-parser@13.1.0`, `ajv@8.20.0`, and `ajv-formats@3.0.1` on 2026-10-11. Public npm metadata declares MIT for each and Swagger Parser requires Node >=22.19.0, compatible with the Node 24 target. The [official parser documentation](https://apidevtools.com/swagger-parser/) and [Ajv JSON Schema documentation](https://ajv.js.org/json-schema.html) informed the local OpenAPI 3.1/JSON Schema 2020-12 validation. External reference resolution is disabled. Swagger Parser is development-only; Ajv/Ajv-formats already belonged to Fastify's transitive runtime graph, as the notice inventory records. The contract scripts do not add a runtime integration requirement.
+
+The D1 installed snapshot contains 279 package locations, 50 absent optional locations and 289 notice sections. All added installed package license/notice texts were inspected and regenerated with the deterministic notice generator; `--check` passed. MIT and an additional bundled Python-2.0 notice are preserved in the updated notices. Historical Phase A counts above describe that earlier snapshot.
+
+The disposable Linux client test image uses the reviewed pinned Node image as its base and explicitly pins Debian tool packages: bash 5.2.15-2+b13, curl 7.88.1-10+deb12u15, jq 1.6-2.1+deb12u2, python3 3.11.2-1+b1 and coreutils 9.1-1. Versions came from the image's official Debian Bookworm package metadata. This test image is removed after verification and is not a distributed runtime artifact; Debian supplies its transitive package graph.
+
 Versions below are installed resolutions, not the looser ranges in `package.json`.
 
 | Purpose | Packages and resolved versions |

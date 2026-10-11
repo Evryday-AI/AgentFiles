@@ -1,6 +1,6 @@
 # Agent integration
 
-**Drafted from source; runtime verification pending D1.** These instructions describe the imported API and safe example clients. AgentFiles remains in preparation; a clean installation and application HTTP round trip are release gates, not claims made by this document.
+**The independent example clients were exercised against real local HTTP/PostgreSQL and a fresh isolated Compose fixture.** See [D1 evidence](verification/phase-d.md) for exact platforms, tests and limitations. AgentFiles remains in preparation; these checks do not complete release acceptance or establish public HTTPS/phone access.
 
 An operator supplies an already configured instance origin and a named scoped API key. The HTTP API works with any HTTP-capable agent. Install or load the [portable skill](../skills/agentfiles/SKILL.md) using your agent's normal skill mechanism; the file contains no credentials. Creating a native MCP server or installing an agent framework is unnecessary.
 
@@ -16,7 +16,7 @@ printf '\n'
 export AGENTFILES_API_KEY
 ```
 
-The URL above is a loopback illustration, not an installed service or a verified production configuration. HTTPS is required for remote origins. The source baseline's production configuration rejects local HTTP; B1/B2 will provide the planned local/public setup behavior. Clients reject credentials, queries, fragments, and paths in the configured origin. Python accepts loopback IPs; the shell deliberately limits plain HTTP to `localhost`, `127.0.0.1`, or `[::1]`.
+The URL above is a loopback illustration, not an installed service. HTTPS is required for remote origins. Local deployment mode permits loopback HTTP; public mode requires HTTPS and explicitly trusted proxies. Clients reject credentials, queries, fragments, and paths in the configured origin. Python accepts loopback IPs; the shell deliberately limits plain HTTP to `localhost`, `127.0.0.1`, or `[::1]`.
 
 The first request is `GET /api/auth/session`, with a Bearer header and no cookie. Both invalid and valid keys receive HTTP 200, so inspect the body. A successful API-key principal has camelCase booleans:
 
@@ -48,7 +48,9 @@ bash examples/upload.sh
 python examples/roundtrip.py
 ```
 
-Each command creates a small synthetic text input when no input file is given, checks authentication and upload/download permission, uploads once, inspects metadata, downloads into a new private directory, and verifies SHA-256. Supply a file with `bash examples/upload.sh ./sample.txt` or `python examples/roundtrip.py ./sample.txt`. The shell requires Bash, curl, jq, `realpath`, standard Unix utilities, and `sha256sum` or `shasum`. The Python example uses Python 3.9+ syntax and only its standard library; client checks have run on Python 3.14, while other Python versions remain untested. Files should remain unchanged during upload. The Python example accepts files up to 1 GiB, matching the baseline file limit.
+Each command creates a small synthetic text input when no input file is given, checks authentication and upload/download permission, uploads once, inspects metadata, downloads into a new private directory, and verifies SHA-256. Supply a file with `bash examples/upload.sh ./sample.txt` or `python examples/roundtrip.py ./sample.txt`. The shell requires Bash, curl, jq, `realpath`, standard Unix utilities, and `sha256sum` or `shasum`. Python uses only its standard library, with runtime checks on Windows Python 3.14 and Linux Python 3.11. Linux amd64 container checks exercised Bash 5.2, curl 7.88.1 and jq 1.6. Other versions/platforms remain untested. Both examples cap input/downloads at 1 GiB and JSON responses at 1 MiB; the server may have a lower upload limit. Keep source files unchanged during upload.
+
+On Windows, the documented cross-platform alternative is Python; do not assume Bash is installed. Direct PowerShell HTTP examples must use `curl.exe`, never rely on the `curl` alias. The Bash example was verified in Linux containers, not native Windows Bash or a native Linux host installation.
 
 The scripts first print a confirmed upload summary, then the verified result. The result includes `name`, `code`, `private_url`, `expires_at`, `sha256`, local download path, and independently verified digest. Save the instance origin and `created_at` alongside the summary when recording a handoff. If a later step fails, the remote upload remains: inspect it before taking further action. Default runs never create shares, persist files, or delete remote files.
 
@@ -60,16 +62,16 @@ The shell uses `download.bin` in a new private directory. Python sanitizes the s
 
 A `private_url` is an administrator browser page. A short code does not grant access. `api_download_url` still requires a key or authenticated cookie. Public sharing creates a separate expiring high-entropy bearer URL; anyone receiving it can use it until its expiry, revocation, or request limit. Do not publish that URL without explicit requester intent.
 
-The Python example offers separate explicit flags. Choose a future ISO timestamp no later than the returned temporary-file expiry:
+Both examples offer separate `--share-expires-at`, `--revoke-share`, and `--delete` flags. Python also supports `--share-max-downloads` and `--persist`. Choose a future ISO timestamp no later than the returned temporary-file expiry:
 
 ```bash
 expiry=$(python -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat())')
 python examples/roundtrip.py --share-expires-at "$expiry" --share-max-downloads 2
 ```
 
-This requests a ten-minute share; ensure the instance's temporary retention exceeds ten minutes, or choose an earlier future expiry. The returned share includes `public_url`, `expires_at`, and `id`. Add `--revoke-share` to explicitly revoke that newly created share in the same run. Add `--delete` only when the requester wants the newly uploaded remote file removed after local verification. `--persist` explicitly requests persistence on upload and requires `canMarkDurable`; the example checks that the response confirms persistence.
+This requests a ten-minute share; ensure the instance's temporary retention exceeds ten minutes, or choose an earlier future expiry. The returned share includes `public_url`, `expires_at`, and `id`; both clients verify its checksum through an anonymous download without a key or cookie. That verification consumes one admitted request when `max_downloads` is set. Add `--revoke-share` to explicitly revoke that newly created share in the same run. Add `--delete` only when the requester wants the newly uploaded remote file removed after local verification. `--persist` explicitly requests persistence on Python upload and requires `canMarkDurable`; the example checks that the response confirms persistence.
 
-For an existing file, persistence uses `PATCH /api/files/:code` with JSON `{"durable": true}`; returning to temporary storage uses `{"durable": false}` and starts a fresh default retention interval. Creating/revoking shares requires `can_share`, changing persistence requires `can_mark_durable`, and deleting files requires `can_delete`. Stop on a denied operation. The baseline silently downgrades unauthorized durable-upload intent; C1's explicit 403 and operator persistence policy are planned. No client should rely on that downgrade.
+For an existing file, persistence uses `PATCH /api/files/:code` with JSON `{"durable": true}`; returning to temporary storage uses `{"durable": false}` and starts a fresh default retention interval. Creating/revoking shares requires `can_share`, changing persistence requires `can_mark_durable`, and deleting files requires `can_delete`. Persistence also requires installation `ALLOW_PERSISTENT_FILES=true`. Denied intent returns 403 PERMISSION_DENIED or PERSISTENCE_DISABLED, without silent downgrade. Stop on that denial; never retry by silently dropping persistence intent.
 
 ## Failures and uncertain upload outcomes
 
@@ -86,9 +88,9 @@ For an existing file, persistence uses `PATCH /api/files/:code` with JSON `{"dur
 
 A timeout or response failure after POST can leave a successfully created file. There is no documented idempotency key. Do not blindly retry an upload. If the response provided a code, inspect it with download permission. Otherwise, list only when `canList` is true, using limit/offset pagination and comparing instance, upload window, creation time, name, size, and checksum. A matching filename alone is insufficient; concurrent identical uploads can still be ambiguous. If reconciliation is unsafe or unavailable, report the unknown outcome and ask the requester how to proceed.
 
-Expiry and share revocation block new transfers. They do not revoke recipient copies or stop transfers already admitted. Share download limits count admitted requests, including requests whose byte delivery later fails. Uploads reserve the configured maximum bytes through metadata commit or compensation. Issued codes have permanent code-only reservations. Full cleanup recovery, generic-client and release acceptance remain later phase requirements; these source contracts do not establish an installable release.
+Expiry and share revocation block new transfers. They do not revoke recipient copies or stop transfers already admitted. Share download limits count admitted requests, including requests whose byte delivery later fails. Uploads reserve the configured maximum bytes through metadata commit or compensation. Default storage policy is one app process, exclusively owned volume, seven-day retention, 1 GiB/file, 10 GiB managed ceiling, 1 GiB free reserve and four concurrent uploads. A small file can be rejected when its maximum reservation cannot fit. Issued codes have permanent code-only reservations. See [lifecycle evidence](verification/phase-c.md); release acceptance remains pending.
 
-See the [API contract](api-contract.md) for exact DTO aliases and route permissions. `/api/instance`, static skill download, and OpenAPI are planned for later phases. The current connection check is `/api/auth/session`.
+See the [API contract](api-contract.md) and [OpenAPI 3.1](../openapi.yaml) for exact DTO aliases and routes. Unauthenticated `/api/instance` supplies only the public origin/retention/upload/persistence/skill fields. `/skills/agentfiles/SKILL.md` serves fixed UTF-8 Markdown without secret interpolation. Example scripts and relative skill links refer to the reviewed source distribution; arbitrary files are not served by the API. The credential connection check remains `/api/auth/session`.
 
 ## Client checks
 
@@ -100,4 +102,4 @@ python -m py_compile examples/roundtrip.py
 bash -n examples/upload.sh
 ```
 
-These client checks do not exercise the AgentFiles application, database, installation, or deployment. Real curl and Python application round trips remain pending D1.
+These mock-server client checks are distinct from application evidence. `node scripts/smoke-compose.mjs --agents` executes both actual clients with new scoped keys against its disposable installation, alongside Linux mock negatives. The native Python integration check uses its own real HTTP/PostgreSQL fixture. [D1 evidence](verification/phase-d.md) records results; public deployment and other platforms are separate gates.

@@ -21,7 +21,7 @@ COPY --from=production-dependencies /app/node_modules ./node_modules
 COPY package.json ./
 COPY --from=build /app/dist/server/ ./dist/server/
 COPY --from=build /app/dist-client/ ./dist-client/
-COPY skills/agentfiles/ ./skills/agentfiles/
+COPY skills/agentfiles/SKILL.md ./skills/agentfiles/SKILL.md
 COPY LICENSE THIRD_PARTY_NOTICES.md ./
 USER node
 EXPOSE 3000

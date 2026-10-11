@@ -8,6 +8,7 @@ import fastifyRateLimit from "@fastify/rate-limit";
 import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
 import { registerAdminRoutes } from "./adminRoutes.js";
+import { registerInstanceRoutes } from "./instanceRoutes.js";
 import { cleanupExpiredFiles, startCleanupExpiredFilesJob } from "./cleanup.js";
 import { loadConfig, type AppConfig } from "./config.js";
 import { registerFilesRoutes } from "./filesRoutes.js";
@@ -75,6 +76,7 @@ export function buildServer(
     const ready = await checkReadiness(db, EXPECTED_SCHEMA_VERSION);
     return reply.code(ready ? 200 : 503).send({ ready });
   });
+  void server.register(registerInstanceRoutes, { config });
   if (!deps.db)
     server.addHook("onClose", async () => {
       await db.close();

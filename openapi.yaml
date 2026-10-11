@@ -1,0 +1,1866 @@
+openapi: 3.1.0
+info:
+  title: AgentFiles standalone HTTP API
+  version: 0.1.0
+  description: >-
+    MIT self-hosted edition: one app process, exclusively owned volume. No hosted account or
+    framework. Browser shell / and /files/:code and /assets/* are intentionally outside this API
+    document. Cookie mutations require exact configured Origin; JSON/headers bounded at 16 KiB.
+    Protected routes use no-store, nosniff and no-referrer. This contract does not establish
+    release/deployment acceptance.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: https://files.example.com
+    description: Illustrative origin; substitute operator-provided instance
+paths:
+  /api/health:
+    get:
+      operationId: getHealth
+      summary: Process liveness
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /api/ready:
+    get:
+      operationId: getReady
+      summary: Database schema version/checksum readiness
+      security: []
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ready'
+        '503':
+          description: Not ready; bounded probe
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ready'
+  /api/instance:
+    get:
+      operationId: getInstance
+      summary: Only public configured instance metadata
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instance'
+  /skills/agentfiles/SKILL.md:
+    get:
+      operationId: getAgentSkill
+      summary: Bundled literal UTF-8 Markdown skill
+      security: []
+      responses:
+        '200':
+          description: Fixed distributed skill. Never interpolates configuration or credentials.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /api/auth/login:
+    post:
+      operationId: login
+      summary: Administrator password login; sets signed HttpOnly cookie
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResult'
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: agentfiles_admin signed HttpOnly SameSite=Lax cookie; Secure in public mode
+        '400':
+          description: Malformed or invalid request; correct input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Login'
+  /api/auth/logout:
+    post:
+      operationId: logout
+      summary: Revoke and clear administrator cookie
+      security:
+        - AdminCookie: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResult'
+        '400':
+          description: Malformed or invalid request; correct input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      description: >-
+        Matching Origin required. Explicit Bearer selects key authority and returns 401/403. Body
+        may be omitted or empty JSON object.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              required: []
+              additionalProperties: false
+  /api/auth/session:
+    get:
+      operationId: getSession
+      summary: Connection check; HTTP 200 also means authenticated false
+      security:
+        - {}
+        - BearerAuth: []
+        - AdminCookie: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/admin/api-keys:
+    get:
+      operationId: listApiKeys
+      summary: Administrator only; missing or key authority returns 403
+      security:
+        - AdminCookie: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyList'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: createApiKey
+      summary: Create named scoped key; secret returned once
+      security:
+        - AdminCookie: []
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyCreated'
+        '400':
+          description: Malformed or invalid request; correct input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KeyCreateInput'
+      description: >-
+        Matching Origin required. Defaults upload/download/list true; delete/persistence/share
+        false. Name bounded to 128 UTF-8 bytes.
+  /api/admin/api-keys/{id}:
+    patch:
+      operationId: updateApiKey
+      summary: Update key name/permissions; never secret/hash
+      security:
+        - AdminCookie: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyResult'
+        '400':
+          description: Malformed or invalid request; correct input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Missing or deleted record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KeyInput'
+    delete:
+      operationId: revokeApiKey
+      summary: Revoke named key
+      security:
+        - AdminCookie: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Revoked'
+        '400':
+          description: Malformed or invalid request; correct input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Missing or deleted record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+  /api/admin/storage-usage:
+    get:
+      operationId: getStorageUsage
+      summary: Administrator status; preserves measured bytes alias
+      security:
+        - AdminCookie: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Storage'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/files:
+    post:
+      operationId: uploadFile
+      summary: Stream one file; can_upload
+      security:
+        - BearerAuth: []
+        - AdminCookie: []
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/File'
+        '400':
+          description: Malformed or invalid request; correct input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '408':
+          description: UPLOAD_IDLE_TIMEOUT; incomplete upload. Reconcile before any new POST.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          description: Multipart or upload size exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Readiness, allocation retry, issuance disabled, or uncertain commit; reconcile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '507':
+          description: STORAGE_CAPACITY_EXCEEDED or CODE_SPACE_EXHAUSTED.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                durable:
+                  type: string
+                  enum:
+                    - 'true'
+                    - '1'
+                    - 'on'
+                    - 'false'
+                    - '0'
+                    - 'off'
+              required:
+                - file
+              additionalProperties: false
+      description: >-
+        One file and optional durable field only; duplicate/unknown/truncated parts rejected.
+        Filename max 1024 UTF-8 bytes, nonempty, no NUL. Per-file configured limit; max 20 fields,
+        4096 bytes/field, 25 parts. Persistence requires explicit true intent, can_mark_durable and
+        installation policy. Reserves configured maximum upload bytes through metadata
+        commit/compensation. No idempotency; never blindly repeat uncertain POST.
+    get:
+      operationId: listFiles
+      summary: List active available files; can_list
+      security:
+        - BearerAuth: []
+        - AdminCookie: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileList'
+        '400':
+          description: Malformed or invalid request; correct input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 2147483647
+            default: 0
+        - name: durable
+          in: query
+          schema:
+            type: string
+            enum:
+              - 'true'
+              - '1'
+              - 'on'
+              - 'false'
+              - '0'
+              - 'off'
+      description: >-
+        Strict decimal integers, unknown query params rejected. Mutable pagination is not a
+        snapshot.
+  /api/files/{code}:
+    get:
+      operationId: getFile
+      summary: Inspect metadata; can_download
+      security:
+        - BearerAuth: []
+        - AdminCookie: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/File'
+        '400':
+          description: Malformed or invalid request; correct input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Missing or deleted record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Expired or unavailable file/share.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^F-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}$
+    patch:
+      operationId: setFileRetention
+      summary: Explicit retention change; can_mark_durable
+      security:
+        - BearerAuth: []
+        - AdminCookie: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/File'
+        '400':
+          description: Malformed or invalid request; correct input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Missing or deleted record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: FILE_DELETION_IN_PROGRESS; retention cannot restore the file.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Expired or unavailable file/share.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Readiness, allocation retry, issuance disabled, or uncertain commit; reconcile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^F-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Retention'
+      description: >-
+        True requires ALLOW_PERSISTENT_FILES and removes expiry. False starts fresh default
+        interval. Row lock arbitrates deletion; cannot resurrect expired/claimed/deleted files.
+    delete:
+      operationId: deleteFile
+      summary: Explicit authorized deletion; can_delete
+      security:
+        - BearerAuth: []
+        - AdminCookie: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deleted'
+        '400':
+          description: Malformed or invalid request; correct input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Missing or deleted record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Readiness, allocation retry, issuance disabled, or uncertain commit; reconcile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^F-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}$
+      description: >-
+        Claim before unlink; pending/uncertain deletion returns 503 FILE_DELETION_PENDING. Repeat
+        same claim only; confirmed finalization returns 200 until metadata purge.
+  /api/files/{code}/download:
+    get:
+      operationId: downloadFile
+      summary: Authenticated attachment; can_download
+      security:
+        - BearerAuth: []
+        - AdminCookie: []
+      responses:
+        '200':
+          description: >-
+            Attachment byte stream; never redirects. Access checks apply at admission, not
+            throughout delivery. Range/resumable downloads are not supported.
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: attachment; safe encoded filename
+            Content-Type:
+              schema:
+                type: string
+              description: Validated MIME type, or application/octet-stream
+            Cache-Control:
+              schema:
+                const: no-store
+            X-Content-Type-Options:
+              schema:
+                const: nosniff
+            Referrer-Policy:
+              schema:
+                const: no-referrer
+          content:
+            '*/*':
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Malformed or invalid request; correct input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Missing or deleted record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Expired or unavailable file/share.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^F-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}$
+  /api/files/{code}/share:
+    post:
+      operationId: createShare
+      summary: Explicit expiring share; can_share
+      security:
+        - BearerAuth: []
+        - AdminCookie: []
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Share'
+        '400':
+          description: Malformed or invalid request; correct input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Missing or deleted record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: Expired or unavailable file/share.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^F-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShareInput'
+      description: >-
+        Future ISO date required, no later than temporary-file expiry; optional positive count.
+        Aliases accepted individually, conflicting aliases rejected. public_url contains a bearer
+        secret.
+  /api/share-links/{id}:
+    delete:
+      operationId: revokeShare
+      summary: Explicit share revocation; can_share
+      security:
+        - BearerAuth: []
+        - AdminCookie: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShareRevoked'
+        '400':
+          description: Malformed or invalid request; correct input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission or persistence/origin policy denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Missing or deleted record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+  /s/{token}:
+    get:
+      operationId: downloadPublicShare
+      summary: Public bearer-token attachment; no other authentication
+      security: []
+      responses:
+        '200':
+          description: >-
+            Attachment byte stream; never redirects. Access checks apply at admission, not
+            throughout delivery. Range/resumable downloads are not supported.
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: attachment; safe encoded filename
+            Content-Type:
+              schema:
+                type: string
+              description: Validated MIME type, or application/octet-stream
+            Cache-Control:
+              schema:
+                const: no-store
+            X-Content-Type-Options:
+              schema:
+                const: nosniff
+            Referrer-Policy:
+              schema:
+                const: no-referrer
+          content:
+            '*/*':
+              schema:
+                type: string
+                format: binary
+        '410':
+          description: Expired or unavailable file/share.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate or upload concurrency limit; honor Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          headers:
+            Retry-After:
+              description: >-
+                Seconds before a safe new request when supplied; never blindly retry uncertain
+                uploads.
+              schema:
+                type: string
+        '500':
+          description: Controlled operation failure; reconcile uncertain mutations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^[A-Za-z0-9_-]{43}$
+      description: >-
+        Token alone authorizes admission. Invalid/expired/revoked/exhausted/unavailable links return
+        410. Count means admitted requests, not completed delivery. Admission locks file then share,
+        rechecks eligibility immediately before opening storage, commits count before bytes;
+        expiry/revocation cannot abort already admitted transfer or retract copies.
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Named permission-scoped API key. Explicit header exclusively selects key authority, no
+        cookie fallback.
+    AdminCookie:
+      type: apiKey
+      in: cookie
+      name: agentfiles_admin
+      description: Signed administrator session cookie; admin mutations need matching Origin.
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        statusCode:
+          type: integer
+          minimum: 0
+        message:
+          type: string
+      required:
+        - error
+      additionalProperties: true
+    Health:
+      type: object
+      properties:
+        ok:
+          const: true
+        service:
+          const: agentfiles
+      required:
+        - ok
+        - service
+      additionalProperties: false
+    Ready:
+      type: object
+      properties:
+        ready:
+          type: boolean
+      required:
+        - ready
+      additionalProperties: false
+    Instance:
+      type: object
+      properties:
+        name:
+          const: AgentFiles
+        base_url:
+          type: string
+          format: uri
+        retention_days:
+          type: integer
+          minimum: 1
+        max_upload_bytes:
+          type: integer
+          minimum: 1
+        allow_persistent_files:
+          type: boolean
+        skill_url:
+          type: string
+          format: uri
+      required:
+        - name
+        - base_url
+        - retention_days
+        - max_upload_bytes
+        - allow_persistent_files
+        - skill_url
+      additionalProperties: false
+    Admin:
+      type: object
+      properties:
+        type:
+          const: admin
+        name:
+          type: string
+      required:
+        - type
+        - name
+      additionalProperties: false
+    KeyPrincipal:
+      type: object
+      properties:
+        type:
+          const: api_key
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        canUpload:
+          type: boolean
+        canDownload:
+          type: boolean
+        canList:
+          type: boolean
+        canDelete:
+          type: boolean
+        canMarkDurable:
+          type: boolean
+        canShare:
+          type: boolean
+      required:
+        - type
+        - id
+        - name
+        - canUpload
+        - canDownload
+        - canList
+        - canDelete
+        - canMarkDurable
+        - canShare
+      additionalProperties: false
+    Session:
+      oneOf:
+        - type: object
+          properties:
+            authenticated:
+              const: false
+            principal:
+              type: 'null'
+          required:
+            - authenticated
+            - principal
+          additionalProperties: false
+        - type: object
+          properties:
+            authenticated:
+              const: true
+            principal:
+              oneOf:
+                - $ref: '#/components/schemas/Admin'
+                - $ref: '#/components/schemas/KeyPrincipal'
+          required:
+            - authenticated
+            - principal
+          additionalProperties: false
+    Login:
+      type: object
+      properties:
+        username:
+          type: string
+          maxLength: 128
+        password:
+          type: string
+          maxLength: 4096
+      required:
+        - username
+        - password
+      additionalProperties: false
+    LoginResult:
+      type: object
+      properties:
+        authenticated:
+          const: true
+        principal:
+          $ref: '#/components/schemas/Admin'
+      required:
+        - authenticated
+        - principal
+      additionalProperties: false
+    LogoutResult:
+      type: object
+      properties:
+        authenticated:
+          const: false
+      required:
+        - authenticated
+      additionalProperties: false
+    KeyInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        can_upload:
+          type: boolean
+        can_download:
+          type: boolean
+        can_list:
+          type: boolean
+        can_delete:
+          type: boolean
+        can_mark_durable:
+          type: boolean
+        can_share:
+          type: boolean
+      required: []
+      additionalProperties: false
+    KeyRecord:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        canUpload:
+          type: boolean
+        canDownload:
+          type: boolean
+        canList:
+          type: boolean
+        canDelete:
+          type: boolean
+        canMarkDurable:
+          type: boolean
+        canShare:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        revokedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+      required:
+        - id
+        - name
+        - canUpload
+        - canDownload
+        - canList
+        - canDelete
+        - canMarkDurable
+        - canShare
+        - createdAt
+        - lastUsedAt
+        - revokedAt
+      additionalProperties: false
+    KeyResult:
+      type: object
+      properties:
+        apiKey:
+          $ref: '#/components/schemas/KeyRecord'
+      required:
+        - apiKey
+      additionalProperties: false
+    KeyCreated:
+      type: object
+      properties:
+        apiKey:
+          $ref: '#/components/schemas/KeyRecord'
+        secret:
+          type: string
+          pattern: ^af_[a-f0-9]{24}_[a-f0-9]{64}$
+      required:
+        - apiKey
+        - secret
+      additionalProperties: false
+    KeyList:
+      type: object
+      properties:
+        apiKeys:
+          type: array
+          items:
+            $ref: '#/components/schemas/KeyRecord'
+      required:
+        - apiKeys
+      additionalProperties: false
+    Revoked:
+      type: object
+      properties:
+        revoked:
+          const: true
+      required:
+        - revoked
+      additionalProperties: false
+    File:
+      type: object
+      properties:
+        code:
+          type: string
+          pattern: ^F-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}$
+        name:
+          type: string
+        mime_type:
+          type: string
+        size:
+          type: integer
+          minimum: 0
+        size_bytes:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        expiry:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        expires_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        durable:
+          type: boolean
+        is_durable:
+          type: boolean
+        sha256:
+          type:
+            - string
+            - 'null'
+          pattern: ^[a-f0-9]{64}$
+        private_url:
+          type: string
+          format: uri
+        api_download_url:
+          type: string
+          format: uri
+        uploaded_by:
+          type: object
+          properties:
+            type:
+              enum:
+                - admin
+                - api_key
+            name:
+              type:
+                - string
+                - 'null'
+          required:
+            - type
+            - name
+          additionalProperties: false
+        metadata:
+          type: object
+          additionalProperties: true
+      required:
+        - code
+        - name
+        - mime_type
+        - size
+        - size_bytes
+        - created_at
+        - updated_at
+        - expiry
+        - expires_at
+        - durable
+        - is_durable
+        - sha256
+        - private_url
+        - api_download_url
+        - uploaded_by
+        - metadata
+      additionalProperties: false
+    FileList:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/File'
+      required:
+        - files
+      additionalProperties: false
+    Retention:
+      type: object
+      properties:
+        durable:
+          type: boolean
+      required:
+        - durable
+      additionalProperties: false
+    Deleted:
+      type: object
+      properties:
+        deleted:
+          const: true
+        code:
+          type: string
+          pattern: ^F-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}$
+      required:
+        - deleted
+        - code
+      additionalProperties: false
+    ShareInput:
+      type: object
+      properties:
+        expires_at:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        max_downloads:
+          type:
+            - integer
+            - 'null'
+          minimum: 1
+          maximum: 2147483647
+        maxDownloads:
+          type:
+            - integer
+            - 'null'
+          minimum: 1
+          maximum: 2147483647
+      required: []
+      additionalProperties: false
+      allOf:
+        - anyOf:
+            - required:
+                - expires_at
+            - required:
+                - expiresAt
+        - not:
+            required:
+              - expires_at
+              - expiresAt
+        - not:
+            required:
+              - max_downloads
+              - maxDownloads
+    Share:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        file_code:
+          type: string
+          pattern: ^F-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}$
+        public_url:
+          type: string
+          format: uri
+        expires_at:
+          type: string
+          format: date-time
+        max_downloads:
+          type:
+            - integer
+            - 'null'
+          minimum: 1
+          maximum: 2147483647
+        download_count:
+          type: integer
+          minimum: 0
+        revoked_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - file_code
+        - public_url
+        - expires_at
+        - max_downloads
+        - download_count
+        - revoked_at
+        - created_at
+      additionalProperties: false
+    ShareRevoked:
+      type: object
+      properties:
+        revoked:
+          const: true
+        id:
+          type: string
+          format: uuid
+      required:
+        - revoked
+        - id
+      additionalProperties: false
+    Job:
+      type: object
+      properties:
+        last_attempt_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        last_success_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        failures:
+          type: integer
+          minimum: 0
+      required:
+        - last_attempt_at
+        - last_success_at
+        - failures
+      additionalProperties: false
+    Purge:
+      type: object
+      properties:
+        last_attempt_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        last_success_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        complete:
+          type: boolean
+        retained:
+          type: integer
+          minimum: 0
+        failures:
+          type: integer
+          minimum: 0
+      required:
+        - last_attempt_at
+        - last_success_at
+        - complete
+        - retained
+        - failures
+      additionalProperties: false
+    Cleanup:
+      type: object
+      properties:
+        last_attempt_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        last_success_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        pending_expired_bytes:
+          type: integer
+          minimum: 0
+        failed_files:
+          type: integer
+          minimum: 0
+        oldest_pending_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+      required:
+        - last_attempt_at
+        - last_success_at
+        - pending_expired_bytes
+        - failed_files
+        - oldest_pending_at
+      additionalProperties: false
+    Storage:
+      type: object
+      properties:
+        bytes:
+          type: integer
+          minimum: 0
+        managedBytes:
+          type: integer
+          minimum: 0
+        reservedBytes:
+          type: integer
+          minimum: 0
+        active:
+          type: integer
+          minimum: 0
+        unresolvedUploads:
+          type: integer
+          minimum: 0
+        maxStorageBytes:
+          type: integer
+          minimum: 0
+        managed_bytes:
+          type: integer
+          minimum: 0
+        reserved_bytes:
+          type: integer
+          minimum: 0
+        free_disk_bytes:
+          type: integer
+          minimum: 0
+        max_storage_bytes:
+          type: integer
+          minimum: 0
+        min_free_disk_bytes:
+          type: integer
+          minimum: 0
+        active_uploads:
+          type: integer
+          minimum: 0
+        cleanup:
+          $ref: '#/components/schemas/Cleanup'
+        reconciliation:
+          $ref: '#/components/schemas/Job'
+        purge:
+          $ref: '#/components/schemas/Purge'
+        event_failures:
+          type: integer
+          minimum: 0
+      required:
+        - bytes
+        - managedBytes
+        - reservedBytes
+        - active
+        - unresolvedUploads
+        - maxStorageBytes
+        - managed_bytes
+        - reserved_bytes
+        - free_disk_bytes
+        - max_storage_bytes
+        - min_free_disk_bytes
+        - active_uploads
+        - cleanup
+        - reconciliation
+        - purge
+        - event_failures
+      additionalProperties: false
+    KeyCreateInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        can_upload:
+          type: boolean
+        can_download:
+          type: boolean
+        can_list:
+          type: boolean
+        can_delete:
+          type: boolean
+        can_mark_durable:
+          type: boolean
+        can_share:
+          type: boolean
+      required:
+        - name
+      additionalProperties: false
