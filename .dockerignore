@@ -17,11 +17,41 @@ scripts/**
 !src/
 src/**
 !src/server/
-!src/server/**
+src/server/**
+!src/server/*.ts
+!src/server/migrations/
+src/server/migrations/**
+!src/server/migrations/*.sql
 !src/client/
-!src/client/**
+src/client/**
+!src/client/*.ts
+!src/client/*.tsx
+!src/client/*.css
+!src/client/components/
+src/client/components/**
+!src/client/components/*.tsx
 !skills/
 skills/**
 !skills/agentfiles/
-!skills/agentfiles/**
-# Tests never enter either build context; only reviewed build/setup inputs above.
+skills/agentfiles/**
+!skills/agentfiles/SKILL.md
+# Final exclusions must follow every inclusion. Source directories must never
+# reopen nested credentials, private/runtime data, tests or tool caches.
+**/.*
+**/private/**
+**/config/**
+**/storage/**
+**/uploads/**
+**/data/**
+**/backups/**
+**/tmp/**
+**/node_modules/**
+**/tests/**
+**/__tests__/**
+**/*.test.*
+**/*.spec.*
+**/*.local
+**/*.local.*
+**/*.log
+**/*.dump
+**/*.sql.gz
