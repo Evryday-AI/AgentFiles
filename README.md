@@ -6,7 +6,7 @@ Upload through an HTTP API, pass a short file code to another authorized agent, 
 
 ## Project status
 
-AgentFiles is in preparation. The complete standalone MIT application, administrator setup, Compose runtime, lifecycle controls, HTTP agent examples and browser interface have local verification evidence. A fresh local installation has been exercised on Windows with Docker Desktop Linux containers. CI/security maintenance and synthetic upgrade/backup/restore checks are implemented locally. An independent local release-candidate audit is being prepared; exact public-commit CI, reachable HTTPS/physical-phone evidence and release acceptance remain pending. An installable release has not been published.
+AgentFiles is in preparation. The complete standalone MIT application, administrator setup, Compose runtime, lifecycle controls, HTTP agent examples and browser interface have local verification evidence. An independent local release-candidate clone passed fresh install, tests, browser/agent handoff and synthetic operations checks on 2026-10-14; its source/image/SBOM inspection is recorded in [candidate evidence](docs/verification/v0.1.0.md). Exact public-commit CI, reachable HTTPS/physical-phone evidence and release acceptance remain pending. An installable release has not been published.
 
 The first release will include a complete self-hosted application, Docker Compose installation, a mobile-friendly browser interface, API documentation, and an agent skill. No paid account or hosted-service dependency will be required to run it.
 
@@ -50,7 +50,7 @@ Temporary files expire after seven days by default. Persistent files require exp
 | Windows Chromium 156, Playwright 1.64.0 | Desktop 1280×900, phone viewport 390×844 and minimum width 320×740; actual checksum downloads | No physical-phone, reachable public HTTPS, Safari/WebKit/Firefox or native Linux browser claim. |
 | GitHub Ubuntu CI | Read-only workflow prepared | Exact public-commit remote execution awaits separately authorized source push. |
 
-See the phase reports for exact scope/results. Managed hosting/billing, multi-customer tenancy, replicas, dedicated CLI/MCP packaging and range/resumable transfers are deferred.
+See the phase reports and [frozen candidate evidence](docs/verification/v0.1.0.md) for exact revisions/results. The audited runtime image remains a private validation artifact; binary redistribution requires reviewed corresponding-source arrangements for its applicable dependencies. Managed hosting/billing, multi-customer tenancy, replicas, dedicated CLI/MCP packaging and range/resumable transfers are deferred.
 
 ## Intended workflow
 
