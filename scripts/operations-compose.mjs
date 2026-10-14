@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, readdir, access } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { backupProject, verifyBackup, validateRecoveryRegistry } from './backup.mjs';
@@ -31,6 +31,34 @@ export async function runOperationsSmoke(ctx) {
   await compose(main, ['up', '-d', '--no-deps', '--force-recreate', 'db']); await waitReady(main); await download();
   record('normal down preserves both volumes; fresh explicit migration and DB recreation preserve file SHA');
   await assert.rejects(backupProject({ project: `${main.project}-absent`, output: resolve(directory, 'backups'), cwd: main.directory }));
+  const nestedSource = (await readFile(resolve(root, 'compose.yaml'), 'utf8'))
+    .replace('- storage:/data/storage', '- storage:/data/storage\n      - nested:/data/storage/.synthetic-nested') + '\n  nested:\n';
+  const nested = await fixture('nested-mount', nestedSource);
+  const expectedImages = { app: await inspect(await ownedContainer(main, 'app'), '{{.Image}}'), db: await inspect(await ownedContainer(main, 'db'), '{{.Image}}') };
+  try {
+    await compose(nested, ['up', '-d']); await waitReady(nested);
+    const nestedApp = await ownedContainer(nested, 'app');
+    const before = JSON.parse(await inspect(nestedApp, '{{json .State}}'));
+    const output = ownedChild(nested.directory, 'refused-backups');
+    await assert.rejects(backupProject({ project: nested.project, output, cwd: nested.directory }), /additional storage mounts/);
+    await assert.rejects(access(output), { code: 'ENOENT' });
+    const after = JSON.parse(await inspect(nestedApp, '{{json .State}}'));
+    assert.equal(after.Running, true); assert.equal(after.StartedAt, before.StartedAt); assert.equal(after.FinishedAt, before.FinishedAt);
+    record('owned nested storage volume refused before output creation or app shutdown');
+  } finally {
+    for (const service of ['app', 'migrate', 'db']) {
+      const container = await ownedContainer(nested, service);
+      assert.equal(await inspect(container, '{{index .Config.Labels "com.docker.compose.service"}}'), service);
+      assert.equal(await inspect(container, '{{.Image}}'), expectedImages[service === 'db' ? 'db' : 'app']);
+    }
+    for (const name of ['storage', 'database', 'nested']) {
+      const volume = JSON.parse((await command(['volume', 'inspect', `${nested.project}_${name}`])).output)[0];
+      assert.equal(volume.Name, `${nested.project}_${name}`);
+      assert.equal(volume.Labels['com.docker.compose.project'], nested.project);
+      assert.equal(volume.Labels['com.docker.compose.volume'], name);
+    }
+    await compose(nested, ['down', '--volumes']);
+  }
   const pending = await upload(main, cookie, 'pending-claim-bytes');
   const expired = await upload(main, cookie, 'expired-snapshot-bytes');
   await compose(main, ['stop', 'app']);

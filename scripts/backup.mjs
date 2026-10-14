@@ -3,7 +3,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createWriteStream, createReadStream } from 'node:fs';
 import { mkdir, readFile, writeFile, realpath, lstat } from 'node:fs/promises';
-import { dirname, resolve, parse } from 'node:path';
+import { dirname, resolve, parse, posix } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
 import { isolatedEnvironment } from './smoke-compose.mjs';
@@ -96,6 +96,14 @@ export async function backupProject({ project, output, cwd = process.cwd() }) {
   assert(appValues.STORAGE_ROOT === '/data/storage' && appDatabase.hostname === 'db' && appDatabase.pathname === '/agentfiles' && appDatabase.username === 'agentfiles' && ['','5432'].includes(appDatabase.port) && decodeURIComponent(appDatabase.password) === databasePassword, 'App must use the selected dedicated database and storage');
   assert(containers.filter(c => c.Config.Labels['com.docker.compose.service'] === 'migrate').every(c => !c.State.Running), 'Migration writer must be stopped');
   const storage = app.Mounts.find(m => m.Destination === '/data/storage');
+  // The archive sees only this parent volume, never a nested container mount.
+  // Normalize Linux destinations independently of the host's path semantics.
+  const storageMounts = app.Mounts.filter(m => {
+    assert(typeof m.Destination === 'string' && posix.isAbsolute(m.Destination), 'Invalid app mount destination');
+    const destination = posix.normalize(m.Destination).replace(/\/+$/, '');
+    return destination === '/data/storage' || destination.startsWith('/data/storage/');
+  });
+  assert(storageMounts.length === 1 && storageMounts[0] === storage, 'Backup refuses additional storage mounts or ambiguous storage root');
   const database = db.Mounts.find(m => m.Destination === '/var/lib/postgresql/data');
   for (const [mount, name, destination] of [[storage, 'storage', '/data/storage'], [database, 'database', '/var/lib/postgresql/data']]) {
     const volume = JSON.parse(docker(['volume', 'inspect', mount?.Name ?? 'invalid']))[0];

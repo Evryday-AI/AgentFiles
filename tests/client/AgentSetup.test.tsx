@@ -6,6 +6,7 @@ import { click, input, render, submit } from "./dom";
 import { act } from "react";
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.body.replaceChildren();
 });
@@ -16,6 +17,7 @@ function setup() {
     removeEventListener() {},
   }));
   const calls: Array<{ url: string; init: RequestInit }> = [];
+  let createdKeyCount = 0;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init: RequestInit = {}) => {
@@ -42,7 +44,7 @@ function setup() {
               ? init.method === "POST"
                 ? {
                     secret: "synthetic-one-time-value",
-                    apiKey: { id: "fixture", name: "fixture agent" },
+                    apiKey: { id: `fixture-${++createdKeyCount}`, name: "fixture agent" },
                   }
                 : { apiKeys: [] }
               : url.startsWith("/api/files?")
@@ -79,6 +81,7 @@ it("checks only the bearer key, never the current admin cookie", async () => {
   );
 });
 it("creates a minimal named key and clears its displayed secret on dismiss and logout", async () => {
+  const errors = vi.spyOn(console, "error");
   const calls = setup();
   const view = await render(<App />);
   await click(view.host, "settings");
@@ -114,6 +117,7 @@ it("creates a minimal named key and clears its displayed secret on dismiss and l
   await click(view.host, "Sign out");
   expect(view.host.textContent).not.toContain("synthetic-one-time-value");
   await view.unmount();
+  expect(errors.mock.calls.filter(args => args.some(value => String(value).includes("same key")))).toEqual([]);
 });
 it("renders authenticated capacity and delayed cleanup state", async () => {
   setup();
