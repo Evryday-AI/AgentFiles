@@ -98,11 +98,12 @@ export async function runOperationsSmoke(ctx) {
   const helper = `${restore.project}-extract`;
   const image = await inspect(restoredApp, '{{.Image}}');
   try {
-    await command(['create', '--name', helper, '--label', `agentfiles.restore-fixture=${restore.project}`, '--network', 'none', '--user', '1000:1000', '--mount', `type=volume,src=${volume.Name},dst=/data/storage`, '--entrypoint', 'tar', image, '-C', '/data/storage', '-xzf', '/tmp/owned-storage.tar.gz']);
-    await command(['cp', resolve(old, 'storage.tar.gz'), `${helper}:/tmp/owned-storage.tar.gz`]);
-    await command(['start', '-a', helper]);
+    await command(['create', '--interactive', '--name', helper, '--label', `agentfiles.restore-fixture=${restore.project}`, '--network', 'none', '--user', '1000:1000', '--mount', `type=volume,src=${volume.Name},dst=/data/storage`, '--entrypoint', 'tar', image, '-C', '/data/storage', '-xzf', '-']);
+    await command(['start', '-a', '-i', helper], { inputFile: resolve(old, 'storage.tar.gz') });
   } finally {
+    assert.equal(await inspect(helper, '{{.Name}}'), `/${helper}`);
     assert.equal(await inspect(helper, '{{index .Config.Labels "agentfiles.restore-fixture"}}'), restore.project);
+    assert.equal(await inspect(helper, '{{.Image}}'), image);
     await command(['rm', helper]);
   }
   assert.equal(await sql(restore, `SELECT count(*) FROM files WHERE lifecycle_state='deleting' AND code='${pendingCode}'`), '1');
@@ -225,9 +226,14 @@ async function runExperimentalUpgrade(ctx) {
   assert.equal((await command(['volume', 'inspect', '--format', '{{index .Labels "com.docker.compose.project"}}', rollbackVolume.Name])).output.trim(), rollback.project);
   const restoreHelper = `${rollback.project}-extract`;
   try {
-    await command(['create', '--name', restoreHelper, '--label', `agentfiles.restore-fixture=${rollback.project}`, '--network', 'none', '--user', '1000:1000', '--mount', `type=volume,src=${rollbackVolume.Name},dst=/data/storage`, '--entrypoint', 'tar', oldImage, '-C', '/data/storage', '-xf', '/tmp/baseline-storage.tar']);
-    await command(['cp', baselineArchive, `${restoreHelper}:/tmp/baseline-storage.tar`]); await command(['start', '-a', restoreHelper]);
-  } finally { assert.equal(await inspect(restoreHelper, '{{index .Config.Labels "agentfiles.restore-fixture"}}'), rollback.project); await command(['rm', restoreHelper]); }
+    await command(['create', '--interactive', '--name', restoreHelper, '--label', `agentfiles.restore-fixture=${rollback.project}`, '--network', 'none', '--user', '1000:1000', '--mount', `type=volume,src=${rollbackVolume.Name},dst=/data/storage`, '--entrypoint', 'tar', oldImage, '-C', '/data/storage', '-xf', '-']);
+    await command(['start', '-a', '-i', restoreHelper], { inputFile: baselineArchive });
+  } finally {
+    assert.equal(await inspect(restoreHelper, '{{.Name}}'), `/${restoreHelper}`);
+    assert.equal(await inspect(restoreHelper, '{{index .Config.Labels "agentfiles.restore-fixture"}}'), rollback.project);
+    assert.equal(await inspect(restoreHelper, '{{.Image}}'), oldImage);
+    await command(['rm', restoreHelper]);
+  }
   await compose(rollback, ['run', '--rm', 'migrate']); await compose(rollback, ['up', '-d']); await waitReady(rollback);
   const rollbackCookie = await login(rollback); const rolledBack = await fetch(`http://127.0.0.1:${rollback.port}/api/files/${file.code}/download`, { headers: { cookie: rollbackCookie } }); assert.equal(rolledBack.status, 200); assert.equal(await rolledBack.text(), data);
   await compose(rollback, ['stop', 'app']);

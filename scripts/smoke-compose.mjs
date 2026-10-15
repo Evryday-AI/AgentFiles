@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, realpath, lstat } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, realpath, lstat, open } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -39,6 +39,23 @@ export function sanitizeDiagnostics(value, secrets = []) {
   return clean.length > 4096 ? `[bounded]\n${clean.slice(-4086)}` : clean;
 }
 
+// Pass protected archives directly through a read-only descriptor. Docker cp
+// preserves mode but creates root-owned files, unreadable by UID 1000 at 0600.
+export async function captureCommand(executable, args, { cwd, env, timeout = 180000, inputFile } = {}) {
+  const input = inputFile === undefined ? undefined : await open(inputFile, 'r');
+  try {
+    return await new Promise((done, reject) => {
+      const child = spawn(executable, args, { cwd, env, windowsHide: true, stdio: [input?.fd ?? 'ignore', 'pipe', 'pipe'] });
+      let output = '';
+      const capture = chunk => { output = (output + chunk.toString()).slice(-65536); };
+      child.stdout.on('data', capture); child.stderr.on('data', capture);
+      const timer = setTimeout(() => { child.kill(); }, timeout);
+      child.on('error', error => { clearTimeout(timer); reject(error); });
+      child.on('close', code => { clearTimeout(timer); done({ code, output }); });
+    });
+  } finally { await input?.close(); }
+}
+
 export async function runComposeSmoke(args = process.argv.slice(2)) {
   const options = parseSmokeOptions(args);
   const template = await readFile(resolve(root, 'compose.yaml'), 'utf8');
@@ -54,16 +71,8 @@ export async function runComposeSmoke(args = process.argv.slice(2)) {
   const results = [];
   const projects = [];
   const record = (scenario) => { results.push({ scenario, result: 'pass' }); console.log(`PASS ${scenario}`); };
-  const command = async (args, { allowFailure = false, timeout = 180000 } = {}) => {
-    const outcome = await new Promise((done, reject) => {
-      const child = spawn('docker', args, { cwd: directory, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-      let output = '';
-      const capture = chunk => { output = (output + chunk.toString()).slice(-65536); };
-      child.stdout.on('data', capture); child.stderr.on('data', capture);
-      const timer = setTimeout(() => { child.kill(); }, timeout);
-      child.on('error', error => { clearTimeout(timer); reject(error); });
-      child.on('close', code => { clearTimeout(timer); done({ code, output }); });
-    });
+  const command = async (args, { allowFailure = false, timeout = 180000, inputFile } = {}) => {
+    const outcome = await captureCommand('docker', args, { cwd: directory, env, timeout, inputFile });
     if (!allowFailure && outcome.code !== 0) throw new Error(`Docker command failed: ${sanitizeDiagnostics(outcome.output, secrets)}`);
     return outcome;
   };
