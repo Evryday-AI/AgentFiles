@@ -19,8 +19,17 @@ export function parseBackupOptions(args) {
   assert(/^[a-z0-9][a-z0-9_-]{0,62}$/.test(values['--project']), 'Unsafe Compose project');
   return { project: values['--project'], output: values['--output'] };
 }
-export function assertQuiescent(state) {
-  assert(state?.Running === false && state.ExitCode === 0, 'App did not stop with a confirmed successful drain; backup refused');
+export function assertQuiescent(state, { stage = 'unspecified', initiallyRunning } = {}) {
+  // Docker state also contains arbitrary daemon errors. Keep failure evidence
+  // to fixed labels and typed scalar fields; never include raw inspect/config.
+  const diagnostic = {
+    stage: ['after-stop', 'after-dump', 'after-archive'].includes(stage) ? stage : 'unspecified',
+    initiallyRunning: typeof initiallyRunning === 'boolean' ? initiallyRunning : null,
+    Running: typeof state?.Running === 'boolean' ? state.Running : null,
+    ExitCode: Number.isInteger(state?.ExitCode) && state.ExitCode >= 0 && state.ExitCode <= 255 ? state.ExitCode : null,
+    OOMKilled: typeof state?.OOMKilled === 'boolean' ? state.OOMKilled : null,
+  };
+  assert(state?.Running === false && state.ExitCode === 0, `App did not stop with a confirmed successful drain; backup refused ${JSON.stringify(diagnostic)}`);
 }
 export function assertOwnedVolume(mount, labels, project, name, destination) {
   assert(mount?.Type === 'volume' && mount.Destination === destination && mount.RW === true &&
@@ -118,6 +127,7 @@ export async function backupProject({ project, output, cwd = process.cwd() }) {
   await safeDirectory(dirname(target)); await mkdir(target, { mode: 0o700 });
   let stopped = false;
   const inspectApp = () => JSON.parse(docker(['inspect', app.Id]))[0];
+  const confirmStopped = stage => assertQuiescent(inspectApp().State, { stage, initiallyRunning: app.State.Running });
   const sql = query => docker(['exec', db.Id, 'psql', '-U', 'agentfiles', '-d', 'agentfiles', '-At', '-v', 'ON_ERROR_STOP=1', '-c', query]);
   const binary = async (args, file) => {
     const child = spawn('docker', args, { env, cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -130,7 +140,7 @@ export async function backupProject({ project, output, cwd = process.cwd() }) {
   };
   try {
     if (app.State.Running) { docker(['stop', '--time', '15', app.Id]); stopped = true; }
-    assertQuiescent(inspectApp().State);
+    confirmStopped('after-stop');
     const appVersion = docker(['run', '--rm', '--network', 'none', '--entrypoint', 'node', app.Image, '-p', "require('./package.json').version"]);
     assert(/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(appVersion), 'Invalid packaged app version');
     const snapshot = sql('SELECT txid_current_snapshot()::text');
@@ -140,9 +150,9 @@ export async function backupProject({ project, output, cwd = process.cwd() }) {
     const evidence = { version: 1, volumeId, boundary: { kind: 'quiesced-full-registry', stoppedApp: app.Id, appImage: app.Image, databaseSnapshot: snapshot, generatedAt: new Date().toISOString() }, codes };
     validateRecoveryRegistry(evidence, volumeId, true);
     await binary(['exec', db.Id, 'pg_dump', '-U', 'agentfiles', '-d', 'agentfiles', '--format=custom', '--no-owner', '--no-acl'], 'database.dump');
-    assertQuiescent(inspectApp().State);
+    confirmStopped('after-dump');
     await binary(['run', '--rm', '--network', 'none', '--user', '1000:1000', '--mount', `type=volume,src=${storage.Name},dst=/data/storage,readonly`, '--entrypoint', 'tar', app.Image, '-C', '/data/storage', '-czf', '-', '.'], 'storage.tar.gz');
-    assertQuiescent(inspectApp().State);
+    confirmStopped('after-archive');
     await writeFile(resolve(target, 'registry.json'), JSON.stringify(evidence), { mode: 0o600, flag: 'wx' });
     const sha256 = {};
     for (const file of ['database.dump', 'storage.tar.gz', 'registry.json']) sha256[file] = await fileHash(resolve(target, file));

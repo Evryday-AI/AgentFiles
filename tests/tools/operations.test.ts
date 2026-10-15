@@ -44,6 +44,25 @@ describe("owned operational backup boundaries", () => {
     expect(() => operations.assertQuiescent({ Running: false, ExitCode: 137 })).toThrow();
     expect(() => operations.assertQuiescent({ Running: false, ExitCode: 0 })).not.toThrow();
   });
+  it("reports the selected backup stage and safe stopped state when drain fails", () => {
+    const check = () => operations.assertQuiescent({ Running: false, ExitCode: 1, OOMKilled: false }, { stage: "after-stop", initiallyRunning: true });
+    expect(check).toThrow('App did not stop with a confirmed successful drain; backup refused');
+    expect(check).toThrow('"stage":"after-stop","initiallyRunning":true,"Running":false,"ExitCode":1,"OOMKilled":false');
+  });
+  it("bounds drain diagnostics and excludes untrusted state/configuration fields", () => {
+    let message = "";
+    try {
+      operations.assertQuiescent({ Running: "private-sentinel", ExitCode: "private-sentinel", OOMKilled: "private-sentinel", Error: "private-sentinel", Env: ["private-sentinel"], StartedAt: "private-sentinel" }, { stage: "private-sentinel".repeat(1000), initiallyRunning: "private-sentinel" });
+    } catch (error) { message = (error as Error).message; }
+    expect(message).not.toContain("private-sentinel");
+    expect(message).toContain('"stage":"unspecified","initiallyRunning":null,"Running":null,"ExitCode":null,"OOMKilled":null');
+    expect(message.length).toBeLessThan(300);
+  });
+  it.each(["after-stop", "after-dump", "after-archive"])("keeps the same success requirement at %s", stage => {
+    expect(() => operations.assertQuiescent({ Running: false, ExitCode: 0 }, { stage, initiallyRunning: false })).not.toThrow();
+    expect(() => operations.assertQuiescent({ Running: true, ExitCode: 0 }, { stage, initiallyRunning: false })).toThrow();
+    expect(() => operations.assertQuiescent({ Running: false, ExitCode: 137, OOMKilled: true }, { stage, initiallyRunning: false })).toThrow('"ExitCode":137,"OOMKilled":true');
+  });
   it("rejects redirected/bind/unowned mounts", () => {
     expect(operations.assertOwnedVolume).toBeTypeOf("function");
     const mount = { Type: "volume", Name: "selected_storage", Destination: "/data/storage", RW: true };
