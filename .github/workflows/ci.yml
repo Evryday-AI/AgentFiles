@@ -115,6 +115,10 @@ jobs:
           cp THIRD_PARTY_NOTICES.md .private/ci/linux-notices.md
       - name: Install pinned Playwright Chromium and OS dependencies
         run: node node_modules/playwright/cli.js install --with-deps chromium
+      - name: Install synthetic browser media prerequisite
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
       - name: Real PostgreSQL, browser and Compose/agent verification
         shell: bash
         run: |

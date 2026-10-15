@@ -39,6 +39,8 @@ npm run test:browser
 node scripts/smoke-compose.mjs --agents
 ```
 
+Browser fixtures also require host FFmpeg on `PATH` with PNG, libvpx/WebM and WAV encoding support to generate synthetic media. On Ubuntu, install it with `sudo apt-get update` and `sudo apt-get install --yes --no-install-recommends ffmpeg`. Playwright's downloaded FFmpeg is separate and does not supply this host command.
+
 The Compose smoke command creates its own settings/services/volumes. It exercises real installation and curl/Python clients, and removes only disposable resources that it owns. Do not replace that with a smoke test against existing runtime data. Linux CI installs Playwright OS dependencies using `install --with-deps chromium`. Chromium viewports are not physical-phone evidence.
 
 ## Layout and fixtures

@@ -9,6 +9,20 @@ import { isolatedEnvironment } from "./smoke-compose.mjs";
 import { sanitizeBrowserOutput } from "./browser-output.mjs";
 if (!process.env.AGENTFILES_TEST_DATABASE_URL || process.env.DATABASE_URL)
   throw new Error("Explicit isolated test database required");
+// Playwright's downloaded FFmpeg serves its own tooling, not the fixture's
+// independent PNG/WebM/WAV generator. Check the host prerequisite before DB work.
+const mediaTool = spawnSync("ffmpeg", ["-version"], {
+  env: isolatedEnvironment(process.env),
+  windowsHide: true,
+  stdio: "ignore",
+  timeout: 10000,
+});
+if (mediaTool.status !== 0) {
+  process.stderr.write(
+    "Browser fixtures require FFmpeg on PATH; install FFmpeg before running test:browser.\n",
+  );
+  process.exit(1);
+}
 // Each viewport receives a fresh HTTP server/database. Production throttles are
 // unchanged, and earlier mutations cannot leak into another project's fixture.
 if (!process.argv.slice(2).some((arg) => arg.startsWith("--project"))) {
