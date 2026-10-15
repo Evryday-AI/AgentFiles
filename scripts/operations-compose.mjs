@@ -1,10 +1,25 @@
 import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, readdir, access } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, readdir, access, chmod } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { backupProject, verifyBackup, validateRecoveryRegistry } from './backup.mjs';
 import { isolatedEnvironment, ownedChild } from './smoke-compose.mjs';
+
+// This fresh directory contains only selected reviewed public build source.
+// chmod is explicit because CI's private umask077 also masks requested modes.
+export async function materializePublicBuildSource(directory, sources) {
+  const target = resolve(directory);
+  await mkdir(target);
+  await chmod(target, 0o755);
+  for (const [path, bytes] of sources) {
+    const destination = ownedChild(target, path);
+    await mkdir(dirname(destination), { recursive: true });
+    for (let parent = dirname(destination); parent !== target; parent = dirname(parent)) await chmod(parent, 0o755);
+    await writeFile(destination, bytes, { mode: 0o644, flag: 'wx' });
+    await chmod(destination, 0o644);
+  }
+}
 
 export async function runOperationsSmoke(ctx) {
   const { root, main, directory, fixture, command, compose, ownedContainer, inspect, waitReady, bytes, file, cookie, secrets, record, download } = ctx;
@@ -155,11 +170,11 @@ export async function runOperationsSmoke(ctx) {
 async function runExperimentalUpgrade(ctx) {
   const { root, directory, fixture, command, compose, ownedContainer, inspect, waitReady, sql, json, edit, login, upload, record } = ctx;
   const baseline = 'b4c99bba7e625678ff55cb71ff2ed04d6e9902ac';
-  const target = ownedChild(directory, 'baseline-source'); await mkdir(target);
+  const target = ownedChild(directory, 'baseline-source');
   const env = isolatedEnvironment(process.env);
   const git = args => { const r = spawnSync('git', args, { cwd: root, env, windowsHide: true, maxBuffer: 16 * 1024 * 1024 }); assert.equal(r.status, 0, 'Public baseline read failed'); return r.stdout; };
   const paths = git(['ls-tree', '-r', '--name-only', baseline, 'src/server', 'src/client', 'skills/agentfiles', 'Dockerfile', '.dockerignore', 'package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.client.json', 'vite.config.ts', 'LICENSE', 'THIRD_PARTY_NOTICES.md']).toString().trim().split('\n');
-  for (const path of paths) { const destination = ownedChild(target, path); await mkdir(dirname(destination), { recursive: true }); await writeFile(destination, git(['show', `${baseline}:${path}`])); }
+  await materializePublicBuildSource(target, paths.map(path => [path, git(['show', `${baseline}:${path}`])]));
   const baselineImage = `${ctx.main.project}-baseline:test`;
   const source = (await readFile(resolve(root, 'compose.yaml'), 'utf8')).replaceAll('context: .', `context: '${target.replaceAll('\\', '/')}'`).replaceAll('agentfiles-local:0.1.0', baselineImage);
   const old = await fixture('upgrade', source);
