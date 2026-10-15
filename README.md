@@ -6,7 +6,7 @@ Upload through an HTTP API, pass a short file code to another authorized agent, 
 
 ## Project status
 
-AgentFiles is in preparation. The complete standalone MIT application, administrator setup, Compose runtime, lifecycle controls, HTTP agent examples and browser interface have local verification evidence. An independent local release-candidate clone passed fresh install, tests, browser/agent handoff and synthetic operations checks on 2026-10-14; its source/image/SBOM inspection is recorded in [candidate evidence](docs/verification/v0.1.0.md). Exact public-commit CI, reachable HTTPS/physical-phone evidence and release acceptance remain pending. An installable release has not been published.
+AgentFiles is in preparation. The reviewed standalone MIT source is public on `codex/phase-e`. An anonymous exact-public-commit clone passed fresh install, tests, browser/agent handoff and synthetic operations checks on 2026-10-15. Both hosted Ubuntu CI jobs passed at `a05bcde`; [candidate evidence](docs/verification/v0.1.0.md#public-source-checkpoint-2026-10-15) identifies the tested revisions, earlier source/image/SBOM audit and one unresolved earlier drain refusal. Reachable HTTPS/physical-phone checks, downloaded release-artifact installation and release acceptance remain pending. An installable release has not been published.
 
 The first release will include a complete self-hosted application, Docker Compose installation, a mobile-friendly browser interface, API documentation, and an agent skill. No paid account or hosted-service dependency will be required to run it.
 
@@ -45,10 +45,10 @@ Temporary files expire after seven days by default. Persistent files require exp
 
 | Environment | Observed evidence | Limits |
 | --- | --- | --- |
-| Windows x64, Node 24.21.0/npm 11.19.0 | Typechecks, unit/setup/DOM/tools, build and Python checks | Two POSIX-only unit checks skip on Windows. |
-| Docker Desktop Linux amd64, Node 24.21.0/PostgreSQL 17.11 pinned images | Isolated Compose install, real SQL/disk lifecycle tests and Bash/curl/Python handoff | Native Linux/macOS hosts and other architectures have no clean-install evidence yet. |
-| Windows Chromium 156, Playwright 1.64.0 | Desktop 1280×900, phone viewport 390×844 and minimum width 320×740; actual checksum downloads | No physical-phone, reachable public HTTPS, Safari/WebKit/Firefox or native Linux browser claim. |
-| GitHub Ubuntu CI | Read-only workflow prepared | Exact public-commit remote execution awaits separately authorized source push. |
+| Windows x64, Node 24.21.0/npm 11.19.0 | Typechecks, unit/setup/DOM/tools, build and Python checks | POSIX-only checks skip on Windows; exact dated counts are in the evidence report. |
+| Docker Desktop Linux amd64, Node 24.21.0/PostgreSQL 17.11 pinned images | Isolated Compose install, real SQL/disk lifecycle tests and Bash/curl/Python handoff | Interactive native Linux/macOS installation and other architectures remain unverified. |
+| Windows Chromium 156, Playwright 1.64.0 | Desktop 1280×900, phone viewport 390×844 and minimum width 320×740; actual checksum downloads | No physical-phone, reachable public HTTPS or Safari/WebKit/Firefox claim. |
+| GitHub Ubuntu 24.04 x64 CI, Node 24.21.0/npm 11.19.0 | Both jobs passed at `a05bcde`: 473 unit, 135 PostgreSQL, 18 Chromium, 14 agent and separate 16-scenario operations/restore runs | Automated synthetic checks; interactive operator installation and physical devices remain separate. |
 
 See the phase reports and [frozen candidate evidence](docs/verification/v0.1.0.md) for exact revisions/results. The audited runtime image remains a private validation artifact; binary redistribution requires reviewed corresponding-source arrangements for its applicable dependencies. Managed hosting/billing, multi-customer tenancy, replicas, dedicated CLI/MCP packaging and range/resumable transfers are deferred.
 
