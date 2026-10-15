@@ -1,0 +1,14 @@
+services:
+  setup:
+    build:
+      context: .
+      dockerfile: Dockerfile.setup
+    user: '${SETUP_UID:-1000}:${SETUP_GID:-1000}'
+    working_dir: /workspace
+    network_mode: none
+    stdin_open: true
+    tty: true
+    volumes:
+      - type: bind
+        source: .
+        target: /workspace

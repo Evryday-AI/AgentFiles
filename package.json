@@ -1,0 +1,67 @@
+{
+  "name": "agentfiles",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "concurrently -n server,client -c blue,green \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "node --env-file=.env.development.local --import tsx --watch src/server/index.ts",
+    "dev:client": "vite --host 127.0.0.1",
+    "build": "vite build && tsc -p tsconfig.json && node -e \"require('node:fs').cpSync('src/server/migrations','dist/server/migrations',{recursive:true})\"",
+    "start": "node dist/server/index.js",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "test:watch": "vitest",
+    "migrate": "node dist/server/migrate.js",
+    "migrate:src": "tsx src/server/migrate.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "validate:openapi": "node scripts/validate-openapi.mjs",
+    "test:browser": "node scripts/test-browser.mjs",
+    "check:public": "node scripts/check-public-export.mjs --tracked"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/multipart": "^9.0.3",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/static": "^10.1.6",
+    "argon2": "^0.44.0",
+    "fastify": "^5.6.2",
+    "pg": "^8.16.3",
+    "pg-connection-string": "^2.14.1",
+    "uuid": "^13.0.0",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@apidevtools/swagger-parser": "13.1.0",
+    "@playwright/test": "1.64.0",
+    "@types/node": "^24.10.1",
+    "@types/pg": "^8.15.6",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.0",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "concurrently": "^9.2.1",
+    "jsdom": "^27.2.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6",
+    "vitest": "^4.0.14"
+  },
+  "license": "MIT",
+  "repository": {
+    "url": "https://github.com/Evryday-AI/AgentFiles.git",
+    "type": "git"
+  },
+  "homepage": "https://github.com/Evryday-AI/AgentFiles#readme",
+  "bugs": {
+    "url": "https://github.com/Evryday-AI/AgentFiles/issues"
+  }
+}

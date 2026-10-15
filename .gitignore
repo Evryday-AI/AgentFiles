@@ -3,6 +3,7 @@
 !.env.example
 *.local
 .private/
+.superpowers/
 .worktrees/
 .codebase-memory/
 .playwright-mcp/
@@ -11,6 +12,13 @@ node_modules/
 dist/
 dist-client/
 coverage/
+__pycache__/
+test-results/
+playwright-report/
+traces/
+blob-report/
+artifacts/
+backups/
 storage/
 uploads/
 data/

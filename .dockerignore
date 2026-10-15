@@ -1,0 +1,57 @@
+# Deny by default: runtime secrets, private provenance, Git, dumps, logs, graph
+# databases, screenshots, planning caches, storage and local dependencies stay out.
+**
+!package.json
+!package-lock.json
+!Dockerfile.setup
+!Dockerfile
+!tsconfig.json
+!tsconfig.client.json
+!vite.config.ts
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!scripts/
+scripts/**
+!scripts/setup.mjs
+!scripts/setup-lib.mjs
+!src/
+src/**
+!src/server/
+src/server/**
+!src/server/*.ts
+!src/server/migrations/
+src/server/migrations/**
+!src/server/migrations/*.sql
+!src/client/
+src/client/**
+!src/client/*.ts
+!src/client/*.tsx
+!src/client/*.css
+!src/client/components/
+src/client/components/**
+!src/client/components/*.tsx
+!skills/
+skills/**
+!skills/agentfiles/
+skills/agentfiles/**
+!skills/agentfiles/SKILL.md
+# Final exclusions must follow every inclusion. Source directories must never
+# reopen nested credentials, private/runtime data, tests or tool caches.
+**/.*
+**/private/**
+**/config/**
+**/storage/**
+**/uploads/**
+**/data/**
+**/backups/**
+**/tmp/**
+**/node_modules/**
+**/tests/**
+**/__tests__/**
+**/*.test.*
+**/*.spec.*
+**/*.local
+**/*.local.*
+**/*.log
+**/*.dump
+**/*.sql.gz

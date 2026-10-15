@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS dependencies
+WORKDIR /app
+COPY package.json package-lock.json ./
+# Extract the reviewed, integrity-pinned Argon2 dependency closure from the app
+# lockfile. The tool neither installs nor contains application dependencies.
+RUN node --input-type=module <<'NODE'
+import fs from 'node:fs';
+const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+const manifest = { name: 'agentfiles-setup', version: '0.1.0', private: true, dependencies: { argon2: lock.packages['node_modules/argon2'].version } };
+const packages = { '': manifest };
+function include(name) {
+  const path = `node_modules/${name}`;
+  if (packages[path]) return;
+  const entry = lock.packages[path];
+  if (!entry) throw new Error('Setup dependency is not in the reviewed lockfile');
+  packages[path] = entry;
+  for (const dependency of Object.keys(entry.dependencies ?? {})) include(dependency);
+}
+include('argon2');
+fs.writeFileSync('package.json', JSON.stringify(manifest));
+fs.writeFileSync('package-lock.json', JSON.stringify({ name: manifest.name, version: manifest.version, lockfileVersion: 3, requires: true, packages }));
+NODE
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
+
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
+WORKDIR /app
+COPY --from=dependencies /app/node_modules ./node_modules
+COPY scripts/setup.mjs scripts/setup-lib.mjs ./scripts/
+COPY src/server/originPolicy.ts ./src/server/originPolicy.ts
+COPY LICENSE THIRD_PARTY_NOTICES.md ./
+USER 1000:1000
+CMD ["node", "/app/scripts/setup.mjs", "--directory", "/workspace"]
